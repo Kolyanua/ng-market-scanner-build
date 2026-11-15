@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - '.github/workflows/build-windows-exe.yml'
       - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'
+      - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (1).zip'
 
 permissions:
   contents: read
@@ -25,8 +27,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'
-          if (-not (Test-Path $archive)) { throw 'Upload the source ZIP to the repository root first.' }
+          $archiveCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'),
+            (Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (1).zip')
+          )
+          $archive = $archiveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $archive) { throw 'Upload the source ZIP to the repository root first.' }
+          Write-Host "Using source archive: $archive"
           $source = Join-Path $env:RUNNER_TEMP 'ngms-source'
           $temp = Join-Path $env:RUNNER_TEMP 'ngms-temp'
           $cache = Join-Path $env:RUNNER_TEMP 'ngms-cache'
@@ -96,6 +103,7 @@ jobs:
           ) | Set-Content (Join-Path $release 'README_FIRST_UA.txt') -Encoding utf8
           "EXE SHA-256: $sha" | Set-Content (Join-Path $release 'BUILD_INFO.txt') -Encoding ascii
           if (Test-Path (Join-Path $env:RUNNER_TEMP 'ngms-build.log')) { Copy-Item (Join-Path $env:RUNNER_TEMP 'ngms-build.log') (Join-Path $release 'WINDOWS_BUILD.log') }
+
       - uses: actions/upload-artifact@v4
         with:
           name: NG-Market-Scanner-Windows-x64
