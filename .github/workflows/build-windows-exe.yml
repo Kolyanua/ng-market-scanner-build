@@ -5,7 +5,6 @@ on:
   push:
     paths:
       - 'NG_MARKET_SCANNER_v1.2.79_AUTO_REFRESH_CONTINUOUS_AFTER_BUY.zip'
-      - '.github/workflows/build-windows-exe.yml'
 
 permissions:
   contents: read
