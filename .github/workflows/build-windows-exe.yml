@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'NG_MARKET_SCANNER_FINAL_v1.2.75_LOW_LATENCY_NO_MANIFEST_SXS_FIX.zip'
+      - 'NG_MARKET_SCANNER_v1.2.79_AUTO_REFRESH_CONTINUOUS_AFTER_BUY.zip'
       - '.github/workflows/build-windows-exe.yml'
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_FINAL_v1.2.75_LOW_LATENCY_NO_MANIFEST_SXS_FIX.zip'
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.79_AUTO_REFRESH_CONTINUOUS_AFTER_BUY.zip'
           if (-not (Test-Path $archive)) { throw 'Upload the source ZIP to the repository root first.' }
           $source = Join-Path $env:RUNNER_TEMP 'ngms-source'
           $temp = Join-Path $env:RUNNER_TEMP 'ngms-temp'
