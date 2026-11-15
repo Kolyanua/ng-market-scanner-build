@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'NG_MARKET_SCANNER_v1.2.79_AUTO_REFRESH_CONTINUOUS_AFTER_BUY.zip'
+      - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'
 
 permissions:
   contents: read
@@ -25,7 +25,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.79_AUTO_REFRESH_CONTINUOUS_AFTER_BUY.zip'
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'
           if (-not (Test-Path $archive)) { throw 'Upload the source ZIP to the repository root first.' }
           $source = Join-Path $env:RUNNER_TEMP 'ngms-source'
           $temp = Join-Path $env:RUNNER_TEMP 'ngms-temp'
