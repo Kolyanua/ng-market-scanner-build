@@ -1,0 +1,114 @@
+name: Build NG Market Scanner Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'NG_MARKET_SCANNER_FINAL_v1.2.75_LOW_LATENCY_NO_MANIFEST_SXS_FIX.zip'
+      - '.github/workflows/build-windows-exe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Extract source and prepare temp folders
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_FINAL_v1.2.75_LOW_LATENCY_NO_MANIFEST_SXS_FIX.zip'
+          if (-not (Test-Path $archive)) { throw 'Upload the source ZIP to the repository root first.' }
+          $source = Join-Path $env:RUNNER_TEMP 'ngms-source'
+          $temp = Join-Path $env:RUNNER_TEMP 'ngms-temp'
+          $cache = Join-Path $env:RUNNER_TEMP 'ngms-cache'
+          New-Item -ItemType Directory -Force -Path $source,$temp,$cache | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $source -Force
+          if (-not (Test-Path (Join-Path $source 'build_single_exe_internal.bat'))) { throw 'Build script missing from source ZIP.' }
+          if (-not (Test-Path (Join-Path $source 'tools\prepare_ocr_models.py'))) { throw 'OCR model preparation script missing.' }
+          "NGMS_SOURCE_ROOT=$source" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TEMP=$temp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TMP=$temp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "PIP_CACHE_DIR=$(Join-Path $cache 'pip')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "PYINSTALLER_CONFIG_DIR=$(Join-Path $cache 'pyinstaller')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ("Free disk space: {0:N2} GB" -f ((Get-PSDrive C).Free / 1GB))
+
+      - name: Build EXE with the project's official build script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'ngms-build.log'
+          Push-Location $env:NGMS_SOURCE_ROOT
+          try {
+            cmd.exe /d /c 'call build_single_exe_internal.bat' *> $log
+            $code = $LASTEXITCODE
+          } finally { Pop-Location }
+          if (Test-Path $log) { Get-Content $log -Tail 180 }
+          if ($code -ne 0) { throw "Build failed with exit code $code." }
+          $exe = Join-Path $env:NGMS_SOURCE_ROOT 'dist\NG Market Scanner.exe'
+          if (-not (Test-Path $exe)) { throw 'Build script did not produce dist\NG Market Scanner.exe.' }
+          if ((Get-Item $exe).Length -lt 50MB) { throw 'EXE is unexpectedly small; refusing to publish.' }
+
+      - name: Smoke-check Windows startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:NGMS_SOURCE_ROOT 'dist\NG Market Scanner.exe'
+          $start = Get-Date
+          $p = Start-Process -FilePath $exe -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(18)
+            do {
+              Start-Sleep -Milliseconds 500
+              $p.Refresh()
+              if ($p.HasExited) { throw "EXE exited early with code $($p.ExitCode)." }
+            } while ((Get-Date) -lt $deadline)
+            $events = @(Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=$start } -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'SideBySide' -and $_.Message -match 'NG Market Scanner|NGMS' })
+            if ($events.Count -gt 0) { $events | Format-List *; throw 'Windows logged a Side-by-Side startup error.' }
+            Write-Host 'Startup smoke-check passed.'
+          } finally {
+            if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Package EXE and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:GITHUB_WORKSPACE 'release'
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          $exe = Join-Path $env:NGMS_SOURCE_ROOT 'dist\NG Market Scanner.exe'
+          Copy-Item $exe (Join-Path $release 'NG Market Scanner.exe')
+          $sha = (Get-FileHash (Join-Path $release 'NG Market Scanner.exe') -Algorithm SHA256).Hash
+          @(
+            'NG Market Scanner — Windows x64'
+            'Built on a Windows GitHub-hosted runner.'
+            'Unsigned executable; SmartScreen may show a warning.'
+            'Verify display resolution and click coordinates on the target PC before enabling automatic actions.'
+            "SHA-256: $sha"
+          ) | Set-Content (Join-Path $release 'README_FIRST_UA.txt') -Encoding utf8
+          "EXE SHA-256: $sha" | Set-Content (Join-Path $release 'BUILD_INFO.txt') -Encoding ascii
+          if (Test-Path (Join-Path $env:RUNNER_TEMP 'ngms-build.log')) { Copy-Item (Join-Path $env:RUNNER_TEMP 'ngms-build.log') (Join-Path $release 'WINDOWS_BUILD.log') }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NG-Market-Scanner-Windows-x64
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NGMS-Windows-Build-Diagnostics
+          path: ${{ runner.temp }}\ngms-build.log
+          if-no-files-found: ignore
+          retention-days: 7
