@@ -22,7 +22,7 @@ def write(p, data):
     p.write_text(data, encoding="utf-8", newline="\n")
 
 
-def set_numeric_constant(rel, name, value, insert_after=None):
+def set_numeric_constant(rel, name, value, insert_after=None, optional=False):
     p, data = read(rel)
     pattern = re.compile(rf"(?m)^([ \t]*){re.escape(name)}\s*=\s*([0-9]+(?:\.[0-9]+)?)(?:\s+#.*)?$")
     matches = list(pattern.finditer(data))
@@ -30,23 +30,30 @@ def set_numeric_constant(rel, name, value, insert_after=None):
         m = matches[0]
         if float(m.group(2)) == float(value):
             print(f"ALREADY PATCHED {rel}: {name}={value:.2f}")
-            return
+            return True
         replacement = f"{m.group(1)}{name} = {value:.2f}"
         write(p, data[:m.start()] + replacement + data[m.end():])
         print(f"PATCHED {rel}: {name} -> {value:.2f}")
-        return
+        return True
     if len(matches) > 1:
         raise RuntimeError(f"Expected at most one numeric constant {name} in {rel}, found {len(matches)}")
     if not insert_after:
+        if optional:
+            print(f"INLINE-GUARD FALLBACK {rel}: {name} not present; patching the comparison literal instead")
+            return False
         raise RuntimeError(f"Missing required constant {name} in {rel}")
     anchor = re.compile(rf"(?m)^([ \t]*){re.escape(insert_after)}\s*=\s*[0-9]+(?:\.[0-9]+)?(?:\s+#.*)?$")
     anchors = list(anchor.finditer(data))
     if len(anchors) != 1:
+        if optional:
+            print(f"INLINE-GUARD FALLBACK {rel}: anchor {insert_after!r} missing; patching the comparison literal instead")
+            return False
         raise RuntimeError(f"Cannot safely insert {name}; anchor {insert_after!r} found {len(anchors)} times")
     m = anchors[0]
     insertion = f"\n{m.group(1)}{name} = {value:.2f}"
     write(p, data[:m.end()] + insertion + data[m.end():])
     print(f"INSERTED {rel}: {name} = {value:.2f}")
+    return True
 
 
 def replace_line(rel, pattern, replacement, label, already_pattern=None, required=True):
@@ -63,7 +70,11 @@ def replace_line(rel, pattern, replacement, label, already_pattern=None, require
         if not required:
             print(f"SKIPPED optional source variation: {rel}: {label}")
             return
-        raise RuntimeError(f"Missing expected line in {rel}: {label}")
+        # Print concise relevant context in the CI log for source variants, but fail closed.
+        lines = data.splitlines()
+        keywords = ("unknown", "confirm", "cancel_cooldown", "retry_due", "fresh_frame", "last_frame_token")
+        context = [f"{i+1}: {line}" for i, line in enumerate(lines) if any(k in line.lower() for k in keywords)]
+        raise RuntimeError(f"Missing expected line in {rel}: {label}. Relevant source lines:\n" + "\n".join(context[-70:]))
     if len(matches) != 1:
         raise RuntimeError(f"Expected one matching line in {rel} for {label}, found {len(matches)}")
     m = matches[0]
@@ -71,6 +82,7 @@ def replace_line(rel, pattern, replacement, label, already_pattern=None, require
     if updated != data:
         write(p, updated)
     print(f"PATCHED {rel}: {label}")
+
 
 main = "main.py"
 for name in (
@@ -80,28 +92,34 @@ for name in (
 ):
     set_numeric_constant(main, name, 3.0)
 
-# Some older v1.2.81 archives used inline literals instead of these two named guards.
-set_numeric_constant(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS", 3.0,
-                     insert_after="POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_FRESH_FRAMES")
-set_numeric_constant(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS", 3.0,
-                     insert_after="POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS")
+# Some older v1.2.81 archives used inline literals instead of these named guards.
+min_guard_named = set_numeric_constant(
+    main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS", 3.0,
+    insert_after="POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_FRESH_FRAMES", optional=True)
+back_guard_anchor = ("POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS" if min_guard_named
+                     else "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS")
+back_guard_named = set_numeric_constant(
+    main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS", 3.0,
+    insert_after=back_guard_anchor, optional=True)
 set_numeric_constant(main, "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", 3.0,
-                     insert_after="POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS")
+                     insert_after="POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS")
 
-# Ensure the guard expressions actually use the constants, even on archives with inline numbers.
+# Ensure the guard expressions use a 3-second bound even when the archive stored inline literals.
+unknown_guard_target = ("POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS" if min_guard_named else "3.00")
+back_guard_target = ("POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS" if back_guard_named else "3.00")
 replace_line(
     main,
     r"^([ \t]*and unknown_for\s*>=\s*)(?:[0-9]+(?:\.[0-9]+)?|POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS)(\s*)$",
-    r"\1POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS\2",
+    rf"\g<1>{unknown_guard_target}\g<2>",
     "unknown-state minimum guard",
-    already_pattern=r"(?m)^\s*and unknown_for\s*>=\s*POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS\s*$",
+    already_pattern=rf"(?m)^\s*and unknown_for\s*>=\s*{re.escape(unknown_guard_target)}\s*$",
 )
 replace_line(
     main,
     r"^([ \t]*and confirm_seen_for\s*>=\s*)(?:[0-9]+(?:\.[0-9]+)?|POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS)(\s*)$",
-    r"\1POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS\2",
+    rf"\g<1>{back_guard_target}\g<2>",
     "modal-seen minimum guard",
-    already_pattern=r"(?m)^\s*and confirm_seen_for\s*>=\s*POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS\s*$",
+    already_pattern=rf"(?m)^\s*and confirm_seen_for\s*>=\s*{re.escape(back_guard_target)}\s*$",
 )
 
 # A missing capture timestamp is not fresh evidence and must never advance a safety gate.
@@ -194,10 +212,12 @@ for fragment in (
     "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS = 3.00",
     "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS = 3.00",
     "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00",
+    f"and unknown_for >= {unknown_guard_target}",
+    f"and confirm_seen_for >= {back_guard_target}",
     "fresh = token is not None and token != self._resume_market_last_frame_token",
     "fresh_confirm_frame = (token is not None and token != self._resume_market_confirm_last_frame_token)",
     "fresh_unknown_frame = (token is not None and token != self._resume_market_unknown_after_confirm_last_frame_token)",
 ):
     if fragment not in data:
-        raise RuntimeError(f"Final post-purchase source validation failed: {fragment}")
+        raise RuntimeError(f"Final source validation failed: {fragment}")
 print("Post-purchase 3-second hotfix applied and source markers validated.")
