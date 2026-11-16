@@ -759,7 +759,7 @@ def patch_capture_compatibility():
             )
         else:
             core_data = re.sub(
-                r'(?m)^CAPTURE_COMPAT_PATCH_VERSION\s*=.*,
+                r'(?m)^CAPTURE_COMPAT_PATCH_VERSION\s*=.*',
                 marker_line,
                 core_data,
                 count=1,
