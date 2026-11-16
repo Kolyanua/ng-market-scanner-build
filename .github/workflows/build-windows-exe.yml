@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - '.github/workflows/build-windows-exe.yml'
       - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'
       - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (1).zip'
+      - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (2).zip'
+      - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (3).zip'
+      - 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (4).zip'
 
 permissions:
   contents: read
@@ -17,6 +19,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -28,12 +32,29 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $archiveCandidates = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip'),
-            (Join-Path $env:GITHUB_WORKSPACE 'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (1).zip')
+            'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX.zip',
+            'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (1).zip',
+            'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (2).zip',
+            'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (3).zip',
+            'NG_MARKET_SCANNER_v1.2.80_AUTO_REFRESH_KEYBOARD_FIX (4).zip'
           )
-          $archive = $archiveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $archive) { throw 'Upload the source ZIP to the repository root first.' }
-          Write-Host "Using source archive: $archive"
+          $archive = $archiveCandidates | ForEach-Object {
+            $candidateName = $_
+            $candidatePath = Join-Path $env:GITHUB_WORKSPACE $candidateName
+            if (Test-Path $candidatePath) {
+              $commitTimeText = git -C $env:GITHUB_WORKSPACE log -1 --format=%ct -- $candidateName
+              if ($LASTEXITCODE -eq 0 -and $commitTimeText) {
+                [pscustomobject]@{
+                  Name = $candidateName
+                  Path = $candidatePath
+                  CommitTime = [long]($commitTimeText | Select-Object -First 1)
+                }
+              }
+            }
+          } | Sort-Object CommitTime -Descending | Select-Object -First 1
+          if (-not $archive) { throw 'No recognized source ZIP found in the repository root.' }
+          Write-Host "Using source archive: $($archive.Name)"
+          $archive = $archive.Path
           $source = Join-Path $env:RUNNER_TEMP 'ngms-source'
           $temp = Join-Path $env:RUNNER_TEMP 'ngms-temp'
           $cache = Join-Path $env:RUNNER_TEMP 'ngms-cache'
