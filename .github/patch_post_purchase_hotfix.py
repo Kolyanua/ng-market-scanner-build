@@ -512,7 +512,7 @@ _CAPTURE_COMPAT_SOURCE = r'''def _dxcam_primary_output_candidates(dxcam_module):
 
 
 def _start_dxcam_primary_capture(dxcam_module, region, screen_size, np_module):
-    """Try DXGI and, when available, WinRT on the adapter that owns the primary screen."""
+    """Try DXGI/WinRT on the primary adapter; retain output_color="BGRA" as the fast path."""
     candidates, has_output_enumeration = _dxcam_primary_output_candidates(dxcam_module)
     backends = ("dxgi", "winrt") if has_output_enumeration else ("dxgi",)
     errors = []
