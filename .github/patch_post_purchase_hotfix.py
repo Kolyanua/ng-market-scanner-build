@@ -471,6 +471,8 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
         monitor_area = mw * mh
 
         return overlap >= monitor_area * 0.985
+    except Exception:
+        return False
 '''
     # Append the standalone function and bind it as a static method so both
     # PurchaseWorker._window_covers_screen(...) and self._window_covers_screen(...)
