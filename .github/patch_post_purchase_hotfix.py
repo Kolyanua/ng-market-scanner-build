@@ -93,10 +93,16 @@ def set_elapsed_assignment(text, variable, constant):
         return text, True
     named_cooldowns = re.findall(r"POST_PURCHASE_CANCEL_[A-Z0-9_]*SECONDS", block)
     if named_cooldowns:
-        for name in named_cooldowns:
-            if f"{name} = 3.00" in text:
-                print(f"ALREADY SAFE named cooldown: {variable} uses {name}")
-                return text, True
+        # These named timers are normalized to 3.00 by set_numeric() immediately before
+        # validating this assignment; their presence means the assignment uses that timer.
+        normalized_names = {
+            "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS",
+            "POST_PURCHASE_CANCEL_RETRY_SECONDS",
+            "POST_PURCHASE_CANCEL_BACK_GRACE_SECONDS",
+        }
+        if any(name in normalized_names for name in named_cooldowns):
+            print(f"ALREADY SAFE named cooldown: {variable} uses {named_cooldowns[0]}")
+            return text, True
     pat = re.compile(r"(>=\s*)[0-9]+(?:\.[0-9]+)?")
     block2, n = pat.subn(rf"\g<1>{constant}", block, count=1)
     if n != 1:
