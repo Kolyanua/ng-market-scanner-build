@@ -81,14 +81,16 @@ def set_elapsed_assignment(text, variable, constant):
         raise RuntimeError(f"Duplicate assignment for {variable}")
     start = starts[0]
     end = start
-    while end + 1 < len(lines) and (lines[end].rstrip().endswith("(") or lines[end].count("(") > lines[end].count(")")):
+    depth = 0
+    while end < len(lines):
+        depth += lines[end].count("(") - lines[end].count(")")
+        if end > start and depth <= 0:
+            break
         end += 1
     block = "".join(lines[start:end+1])
     if constant in block:
         print(f"ALREADY SET cooldown: {variable}")
         return text, True
-    if "last_attempt" not in block:
-        raise RuntimeError(f"Cooldown assignment for {variable} has unexpected shape:\n{block}")
     named_cooldowns = re.findall(r"POST_PURCHASE_CANCEL_[A-Z0-9_]*SECONDS", block)
     if named_cooldowns:
         for name in named_cooldowns:
@@ -102,7 +104,6 @@ def set_elapsed_assignment(text, variable, constant):
     lines[start:end+1] = [block2]
     print(f"SET cooldown: {variable} uses {constant}")
     return "".join(lines), True
-
 
 main = "main.py"
 p, data = read(main)
