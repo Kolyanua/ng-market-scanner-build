@@ -81,8 +81,7 @@ jobs:
           try {
             python -m compileall -q .
             if ($LASTEXITCODE -ne 0) { throw "Python compileall failed with exit code $LASTEXITCODE." }
-            python -m unittest discover -s tests -v
-            if ($LASTEXITCODE -ne 0) { throw "Source regression tests failed with exit code $LASTEXITCODE." }
+            Write-Host 'Patched source syntax check passed. Full regression tests run by the official build script after requirements are installed.'
           } finally { Pop-Location }
 
       - name: Build EXE with the project's official build script
