@@ -502,8 +502,8 @@ _CAPTURE_COMPAT_SOURCE = r'''def _dxcam_primary_output_candidates(dxcam_module):
 
     candidates = []
     for line in str(output_info or "").splitlines():
-        match = re.search(r"Device\\[(\\d+)\\]\\s+Output\\[(\\d+)\\]", line, re.IGNORECASE)
-        primary = re.search(r"\\bPrimary\\s*:\\s*True\\b", line, re.IGNORECASE)
+        match = re.search(r"Device\[(\d+)\]\s+Output\[(\d+)\]", line, re.IGNORECASE)
+        primary = re.search(r"\bPrimary\s*:\s*True\b", line, re.IGNORECASE)
         if match and primary:
             pair = (int(match.group(1)), int(match.group(2)))
             if pair not in candidates:
@@ -759,7 +759,163 @@ def patch_capture_compatibility():
             )
         else:
             core_data = re.sub(
-                r'(?m)^CAPTURE_COMPAT_PATCH_VERSION\s*=\s*["\\'][^"\\']*["\\']\s*$',
+                r'(?m)^CAPTURE_COMPAT_PATCH_VERSION\s*=.*,
+                marker_line,
+                core_data,
+                count=1,
+            )
+        core_path.write_text(core_data, encoding="utf-8", newline="\n")
+        print("PATCHED scanner_core.py: primary-output DXGI/WinRT selection and fresh MSS retry")
+
+    # Regression tests exercise hybrid-GPU selection, WinRT fallback, and BitBlt session renewal.
+    test_path = root / "tests" / "test_v1282_laptop_capture_compat.py"
+    if not test_path.exists():
+        test_path.parent.mkdir(parents=True, exist_ok=True)
+        test_path.write_text(r'''import sys
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+
+try:
+    from PySide6.QtCore import QThread, Signal  # noqa: F401
+except Exception:
+    pyside = types.ModuleType("PySide6")
+    qtcore = types.ModuleType("PySide6.QtCore")
+    class QThread:
+        pass
+    class _Signal:
+        def __init__(self, *args, **kwargs):
+            pass
+    qtcore.QThread = QThread
+    qtcore.Signal = _Signal
+    pyside.QtCore = qtcore
+    sys.modules.setdefault("PySide6", pyside)
+    sys.modules.setdefault("PySide6.QtCore", qtcore)
+
+import scanner_core
+
+ROOT = Path(__file__).resolve().parents[1]
+GRID = {"left": .153, "top": .095, "right": .985, "bottom": .895, "cols": 5, "rows": 3}
+SCREEN = (1920, 1080)
+
+
+def _fake_capture(frame=None, grab_error=None):
+    capture = MagicMock()
+    capture.monitors = [{}, {"left": 0, "top": 0, "width": SCREEN[0], "height": SCREEN[1]}]
+    if grab_error is not None:
+        capture.grab.side_effect = grab_error
+    else:
+        capture.grab.return_value = frame if frame is not None else np.zeros((SCREEN[1], SCREEN[0], 4), dtype=np.uint8)
+    return capture
+
+
+class LaptopCaptureCompatibilityV1282Tests(unittest.TestCase):
+    def setUp(self):
+        scanner_core.close_market_capture()
+        scanner_core._DETAIL_CAPTURE = None
+        scanner_core._DETAIL_CAPTURE_FACTORY = None
+        scanner_core._MARKET_CAPTURE_LAST_ERROR = ""
+
+    def tearDown(self):
+        scanner_core.close_market_capture()
+        scanner_core._DETAIL_CAPTURE = None
+        scanner_core._DETAIL_CAPTURE_FACTORY = None
+
+    def test_primary_output_enumeration_selects_the_actual_primary_adapter(self):
+        fake_dxcam = types.SimpleNamespace(output_info=lambda: (
+            "Device[0] Output[0]: Res:(1920, 1080) Rot:0 Primary:False\n"
+            "Device[1] Output[0]: Res:(1920, 1080) Rot:0 Primary:True\n"
+        ))
+        candidates, enumerated = scanner_core._dxcam_primary_output_candidates(fake_dxcam)
+        self.assertEqual(candidates, [(1, 0)])
+        self.assertTrue(enumerated)
+
+    def test_winrt_retries_the_enumerated_primary_adapter_after_dxgi_failure(self):
+        region = scanner_core._market_capture_region(GRID, SCREEN)
+        h, w = region[3] - region[1], region[2] - region[0]
+        frame = np.zeros((h, w, 4), dtype=np.uint8)
+        dxgi_camera = MagicMock()
+        dxgi_camera.start.side_effect = RuntimeError("simulated DXGI duplication failure")
+        winrt_camera = MagicMock()
+        winrt_camera.get_latest_frame.return_value = (frame, 125.0)
+        fake_dxcam = types.SimpleNamespace(
+            output_info=lambda: "Device[1] Output[0]: Res:(1920, 1080) Rot:0 Primary:True",
+            create=MagicMock(side_effect=[dxgi_camera, winrt_camera]),
+        )
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam}):
+            captured = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        self.assertEqual(fake_dxcam.create.call_count, 2)
+        self.assertEqual(fake_dxcam.create.call_args_list[0].kwargs.get("device_idx"), 1)
+        self.assertEqual(fake_dxcam.create.call_args_list[0].kwargs.get("output_color"), "BGRA")
+        self.assertEqual(fake_dxcam.create.call_args_list[1].kwargs.get("backend"), "winrt")
+        self.assertEqual(captured[4].split(" via ")[1].split()[0], "winrt")
+        self.assertEqual(captured[0].shape, (h, w, 3))
+        self.assertEqual(captured[6], 125.0)
+
+    def test_persistent_mss_bitblt_failure_recreates_capture_session_once(self):
+        bad_camera = MagicMock()
+        bad_camera.start.side_effect = RuntimeError("simulated DXcam unavailable")
+        fake_dxcam = types.SimpleNamespace(create=MagicMock(return_value=bad_camera))
+        bad_mss = _fake_capture(grab_error=OSError("BitBlt stale GDI session"))
+        fresh_mss = _fake_capture()
+        scanner_core._DETAIL_CAPTURE = bad_mss
+        fake_mss_module = types.ModuleType("mss")
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam, "mss": fake_mss_module}):
+            with patch.object(scanner_core, "_get_detail_capture", side_effect=[bad_mss, fresh_mss]):
+                captured = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        self.assertEqual(captured[4], "MSS fresh-session retry fallback")
+        self.assertEqual(captured[0].shape, (SCREEN[1], SCREEN[0], 3))
+        bad_mss.close.assert_called_once()
+        self.assertIn("previous MSS session recovered", scanner_core._MARKET_CAPTURE_LAST_ERROR)
+
+    def test_total_capture_failure_reports_both_dxcam_and_mss_causes(self):
+        bad_camera = MagicMock()
+        bad_camera.start.side_effect = RuntimeError("DXGI initialization failure")
+        fake_dxcam = types.SimpleNamespace(create=MagicMock(return_value=bad_camera))
+        bad_mss_1 = _fake_capture(grab_error=OSError("persistent BitBlt 14007"))
+        bad_mss_2 = _fake_capture(grab_error=OSError("fresh BitBlt 14007"))
+        fake_mss_module = types.ModuleType("mss")
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam, "mss": fake_mss_module}):
+            with patch.object(scanner_core, "_get_detail_capture", side_effect=[bad_mss_1, bad_mss_2]):
+                with self.assertRaisesRegex(RuntimeError, "all available paths") as caught:
+                    scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        message = str(caught.exception)
+        self.assertIn("DXGI initialization failure", message)
+        self.assertIn("persistent BitBlt 14007", message)
+        self.assertIn("fresh BitBlt 14007", message)
+
+    def test_purchase_action_logic_is_not_changed_for_capture_hotfix(self):
+        actions = (ROOT / "scanner_actions.py").read_text(encoding="utf-8")
+        logic = (ROOT / "scanner_core_logic.py").read_text(encoding="utf-8")
+        self.assertIn("CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM", actions)
+        self.assertIn("def match_catalog_model(", logic)
+        self.assertIn("def _resume_continuous_scan_after_action(", (ROOT / "main.py").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+''', encoding="utf-8", newline="\n")
+        print("ADDED tests/test_v1282_laptop_capture_compat.py")
+
+    # The regression test checks these marker strings in the two official builders.
+    for rel in ("build_single_exe_internal.bat", "BUILD_2K_PERSISTENT_DXCAM_v1.2.71.bat"):
+        build_path = root / rel
+        if build_path.is_file():
+            text_value = build_path.read_text(encoding="utf-8-sig", errors="replace")
+            if _CAPTURE_COMPAT_VERSION not in text_value:
+                build_path.write_text(
+                    text_value.rstrip() + f"\r\nrem Capture compatibility: {_CAPTURE_COMPAT_VERSION}\r\n",
+                    encoding="utf-8",
+                    newline="\r\n",
+                )
+                print(f"ADDED capture compatibility marker to {rel}")
+
+
+patch_capture_compatibility()
+,
                 marker_line,
                 core_data,
                 count=1,
