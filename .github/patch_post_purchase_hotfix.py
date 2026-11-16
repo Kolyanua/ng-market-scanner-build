@@ -398,3 +398,89 @@ else:
     )):
         raise RuntimeError("Final validation failed: unknown 3-second guard missing")
 print("Post-purchase 3-second hotfix applied and verified for", guard_marker, "source variant.")
+
+
+# NGMS_FULLSCREEN_TOLERANT_PATCH_V2
+# Use the real primary-monitor geometry rather than strict configured-resolution equality.
+# This handles laptop fullscreen/borderless windows when Windows DPI scaling or the
+# configured scanner resolution differs from the physical monitor coordinate space.
+p, action_data = read("scanner_actions.py")
+if marker not in action_data:
+    tolerant = r'''
+# NGMS_FULLSCREEN_TOLERANT_PATCH_V2
+def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        class _NGMSRect(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class _NGMSPoint(ctypes.Structure):
+            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+        class _NGMSMonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", _NGMSRect),
+                ("rcWork", _NGMSRect),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        if not hwnd or not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+            return False
+
+        wr = _NGMSRect()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(wr)):
+            return False
+
+        pt = _NGMSPoint(0, 0)
+        monitor = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTOPRIMARY
+        if not monitor:
+            return False
+
+        mi = _NGMSMonitorInfo()
+        mi.cbSize = ctypes.sizeof(_NGMSMonitorInfo)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+            return False
+
+        wl, wt, wrt, wb = wr.left, wr.top, wr.right, wr.bottom
+        ml, mt, mrt, mb = mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom
+
+        ww = max(0, wrt - wl)
+        wh = max(0, wb - wt)
+        mw = max(1, mrt - ml)
+        mh = max(1, mb - mt)
+
+        # Fullscreen/borderless can differ by a few pixels because of borders,
+        # capture hooks, or Windows DPI/window-manager rounding.
+        tol_w = max(16, int(mw * 0.015))
+        tol_h = max(16, int(mh * 0.015))
+
+        if ww + tol_w < mw or wh + tol_h < mh:
+            return False
+
+        overlap_w = max(0, min(wrt, mrt) - max(wl, ml))
+        overlap_h = max(0, min(wb, mb) - max(wt, mt))
+        overlap = overlap_w * overlap_h
+        monitor_area = mw * mh
+
+        return overlap >= monitor_area * 0.985
+'''
+    # Append the standalone function and bind it as a static method so both
+    # PurchaseWorker._window_covers_screen(...) and self._window_covers_screen(...)
+    # keep the same call shape.
+    action_data += "
+" + tolerant + "
+PurchaseWorker._window_covers_screen = staticmethod(_ngms_window_covers_primary_monitor)
+"
+    write(p, action_data)
+    print("PATCHED fullscreen geometry: tolerant primary-monitor coverage for laptop fullscreen/borderless")
+else:
+    print("ALREADY SET tolerant primary-monitor fullscreen geometry")
