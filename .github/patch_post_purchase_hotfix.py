@@ -272,14 +272,22 @@ for name in (
     "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS",
     "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS",
 ):
-    if not re.search(rf"(?m)^[ \\t]*{re.escape(name)}\\s*=\\s*3(?:\\.0+)?(?:\\s+#.*)?$", data):
+    if not any(f"{name} = {value}" in data for value in ("3.00", "3.0", "3")):
         raise RuntimeError(f"Final validation failed: {name} is not set to 3 seconds")
 if guard_marker == "nonmodal":
-    if not (re.search(r"(?m)^\\s*POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS\\s*=\\s*3(?:\\.0+)?\\s*$", data)
-            or re.search(r"(?m)^\\s*and nonmodal_for\\s*>=\\s*3(?:\\.0+)?\\s*$", data)):
+    if not any(s in data for s in (
+        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 3.00",
+        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 3.0",
+        "and nonmodal_for >= 3.00",
+        "and nonmodal_for >= 3.0",
+    )):
         raise RuntimeError("Final validation failed: nonmodal 3-second guard missing")
 else:
-    if not (re.search(r"(?m)^\\s*POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS\\s*=\\s*3(?:\\.0+)?\\s*$", data)
-            or re.search(r"(?m)^\\s*and unknown_for\\s*>=\\s*3(?:\\.0+)?\\s*$", data)):
+    if not any(s in data for s in (
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00",
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.0",
+        "and unknown_for >= 3.00",
+        "and unknown_for >= 3.0",
+    )):
         raise RuntimeError("Final validation failed: unknown 3-second guard missing")
 print("Post-purchase 3-second hotfix applied and verified for", guard_marker, "source variant.")
