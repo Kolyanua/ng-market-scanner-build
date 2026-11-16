@@ -400,6 +400,7 @@ else:
 print("Post-purchase 3-second hotfix applied and verified for", guard_marker, "source variant.")
 
 
+marker = "# NGMS_FULLSCREEN_TOLERANT_PATCH_V2"
 # NGMS_FULLSCREEN_TOLERANT_PATCH_V2
 # Use the real primary-monitor geometry rather than strict configured-resolution equality.
 # This handles laptop fullscreen/borderless windows when Windows DPI scaling or the
@@ -422,9 +423,6 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
                 ("bottom", wintypes.LONG),
             ]
 
-        class _NGMSPoint(ctypes.Structure):
-            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
-
         class _NGMSMonitorInfo(ctypes.Structure):
             _fields_ = [
                 ("cbSize", wintypes.DWORD),
@@ -440,14 +438,15 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
         if not user32.GetWindowRect(hwnd, ctypes.byref(wr)):
             return False
 
-        pt = _NGMSPoint(0, 0)
-        monitor = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTOPRIMARY
+        monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
         if not monitor:
             return False
 
         mi = _NGMSMonitorInfo()
         mi.cbSize = ctypes.sizeof(_NGMSMonitorInfo)
         if not user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+            return False
+        if not (mi.dwFlags & 1):  # MONITORINFOF_PRIMARY
             return False
 
         wl, wt, wrt, wb = wr.left, wr.top, wr.right, wr.bottom
@@ -476,10 +475,7 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
     # Append the standalone function and bind it as a static method so both
     # PurchaseWorker._window_covers_screen(...) and self._window_covers_screen(...)
     # keep the same call shape.
-    action_data += "
-" + tolerant + "
-PurchaseWorker._window_covers_screen = staticmethod(_ngms_window_covers_primary_monitor)
-"
+    action_data += "\\n" + tolerant + "\\nPurchaseWorker._window_covers_screen = staticmethod(_ngms_window_covers_primary_monitor)\\n"
     write(p, action_data)
     print("PATCHED fullscreen geometry: tolerant primary-monitor coverage for laptop fullscreen/borderless")
 else:
