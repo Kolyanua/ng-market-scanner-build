@@ -264,28 +264,35 @@ if p is not None:
                      "модальне вікно має залишатися видимим щонайменше 3 с", doc, count=1)
     write(p, doc)
 
-# Some older source archives jump to :tests_failed but omit that batch label.
-# Repair only that diagnostic branch so a failing regression test shows its real log.
+# Normalize the regression-test error branch to a dedicated, unique label.
+# This also works when an older archive has a malformed/ambiguous :tests_failed label.
 build_script = root / "build_single_exe_internal.bat"
 if build_script.is_file():
     bat = build_script.read_text(encoding="utf-8-sig", errors="replace")
-    has_jump = re.search(r"(?im)^\s*if\s+errorlevel\s+1\s+goto\s+tests_failed\s*$", bat) is not None
-    has_label = re.search(r"(?im)^\s*:tests_failed\s*$", bat) is not None
-    if has_jump and not has_label:
-        failed_label = re.search(r"(?im)^\s*:failed\s*$", bat)
+    jump_re = re.compile(r"(?im)^[ \t]*if\s+errorlevel\s+1\s+goto\s+tests_failed[ \t]*$")
+    matches = list(jump_re.finditer(bat))
+    failed_label = re.search(r"(?im)^[ \t]*:failed[ \t]*$", bat)
+    if len(matches) > 1:
+        raise RuntimeError(f"Expected at most one tests_failed jump in build script, found {len(matches)}")
+    if matches:
+        m = matches[0]
+        bat = bat[:m.start()] + "if errorlevel 1 goto ngms_tests_failed_patch" + bat[m.end():]
+        # Remove stale duplicate labels if present, then inject our unique label immediately before :failed.
+        bat = re.sub(r"(?im)^[ \t]*:tests_failed[ \t]*\r?\n(?:echo[^\r\n]*\r?\n)?(?:if exist \"NGMS_BUILD_TESTS\.log\" type \"NGMS_BUILD_TESTS\.log\"\r?\n)?(?:type NGMS_BUILD_TESTS\.log\r?\n)?(?:goto failed\r?\n)?", "", bat)
+        failed_label = re.search(r"(?im)^[ \t]*:failed[ \t]*$", bat)
         if not failed_label:
-            raise RuntimeError("build_single_exe_internal.bat jumps to tests_failed but has no :failed label to anchor a safe repair")
-        extra = (
-            ":tests_failed\r\n"
+            raise RuntimeError("Cannot add regression-test diagnostics: :failed label missing")
+        diag = (
+            ":ngms_tests_failed_patch\r\n"
             "echo [ERROR] Automated tests failed. Full test output follows; log saved as NGMS_BUILD_TESTS.log.\r\n"
             "if exist \"NGMS_BUILD_TESTS.log\" type \"NGMS_BUILD_TESTS.log\"\r\n"
             "goto failed\r\n"
         )
-        bat = bat[:failed_label.start()] + extra + bat[failed_label.start():]
+        bat = bat[:failed_label.start()] + diag + bat[failed_label.start():]
         build_script.write_text(bat, encoding="utf-8", newline="\r\n")
-        print("PATCHED build_single_exe_internal.bat: added missing :tests_failed diagnostic label")
+        print("PATCHED build_single_exe_internal.bat: normalized test failure branch and attached diagnostic output")
     else:
-        print("Build script test-failure label is already valid or not referenced")
+        print("Build script has no standard tests_failed jump; no batch diagnostic patch needed")
 
 # Final assertions before this patched source is allowed to compile.
 _, data = read(main)
