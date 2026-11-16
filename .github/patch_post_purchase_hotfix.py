@@ -752,6 +752,24 @@ def patch_capture_compatibility():
         if core_data.count(start_marker) != 1:
             raise RuntimeError("Refusing capture patch: duplicate _capture_market_frame definitions")
         core_data = core_data[:start] + _CAPTURE_COMPAT_SOURCE + core_data[end:]
+
+        # Explicit capture shutdown/reconfiguration resets the circuit breaker;
+        # low-level retry cleanup calls _close_market_capture_locked() and keeps it latched.
+        close_anchor = (
+            'def close_market_capture():\n'
+            '    """Public cleanup hook used at app shutdown and by tests."""\n'
+        )
+        close_reset = (
+            'def close_market_capture():\n'
+            '    """Public cleanup hook used at app shutdown and by tests."""\n'
+            '    globals().pop("_MARKET_CAPTURE_DXCAM_DISABLED", None)\n'
+            '    globals().pop("_MARKET_CAPTURE_DXCAM_DISABLED_REASON", None)\n'
+        )
+        if close_reset not in core_data:
+            if core_data.count(close_anchor) != 1:
+                raise RuntimeError("Cannot safely add DXcam circuit-breaker reset to close_market_capture()")
+            core_data = core_data.replace(close_anchor, close_reset, 1)
+
         if "CAPTURE_COMPAT_PATCH_VERSION" not in core_data:
             cap_match = re.search(
                 r'(?m)^MARKET_CAPTURE_PATCH_VERSION\s*=\s*[^\r\n]+$',
