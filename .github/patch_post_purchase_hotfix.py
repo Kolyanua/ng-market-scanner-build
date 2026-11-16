@@ -295,6 +295,81 @@ if build_script.is_file():
     else:
         print("Build script has no standard tests_failed jump; no batch diagnostic patch needed")
 
+
+# Fix fullscreen target selection on laptops: minimize/focus transitions can leave a
+# small launcher/helper HWND ahead of the real fullscreen game window in enumeration.
+# Prefer recognized candidates that actually cover the primary display before title/focus.
+p, action_data = read("scanner_actions.py")
+sort_re = re.compile(
+    r"(?m)^        foreground = user32\.GetForegroundWindow\(\)\n"
+    r"        candidates\.sort\(key=lambda item: \(item\[0\] == foreground, bool\(item\[1\]\)\), reverse=True\)\n"
+    r"        return candidates\[0\] if candidates else None$"
+)
+sort_replacement = (
+    "        foreground = user32.GetForegroundWindow()\n"
+    "        screen_size = PurchaseWorker._screen_size()\n"
+    "        def _candidate_covers_screen(item):\n"
+    "            try:\n"
+    "                return PurchaseWorker._window_covers_screen(item[0], screen_size)\n"
+    "            except Exception:\n"
+    "                return False\n"
+    "        # Prioritize a recognized fullscreen game HWND over helper/launcher windows.\n"
+    "        candidates.sort(\n"
+    "            key=lambda item: (_candidate_covers_screen(item), item[0] == foreground, bool(item[1])),\n"
+    "            reverse=True,\n"
+    "        )\n"
+    "        return candidates[0] if candidates else None"
+)
+if "def _candidate_covers_screen(item):" in action_data and "_candidate_covers_screen(item)" in action_data:
+    print("ALREADY SET fullscreen target selection priority")
+else:
+    action_data, target_sort_count = sort_re.subn(sort_replacement, action_data)
+    if target_sort_count != 1:
+        raise RuntimeError(
+            "Could not safely patch fullscreen target selection: "
+            f"expected one recognized candidate sort, found {target_sort_count}"
+        )
+    write(p, action_data)
+    print("PATCHED fullscreen target selection: screen-covering recognized game window first")
+
+# Replace the generic fullscreen error with geometry diagnostics so a remaining
+# device/DPI/window-manager mismatch is actionable rather than a blind guess.
+p, main_data = read("main.py")
+old_error = "            raise RuntimeError('Вікно гри не займає весь основний екран. Увімкни fullscreen/borderless на весь екран монітора (16:9, наприклад 1920×1080 або 2560×1440).')"
+new_error = (
+    "            bounds = 'невідомі'\n"
+    "            try:\n"
+    "                import ctypes\n"
+    "                from ctypes import wintypes\n"
+    "                class _NGMSWindowRect(ctypes.Structure):\n"
+    "                    _fields_ = [('left', wintypes.LONG), ('top', wintypes.LONG),\n"
+    "                                ('right', wintypes.LONG), ('bottom', wintypes.LONG)]\n"
+    "                _rect = _NGMSWindowRect()\n"
+    "                if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(_rect)):\n"
+    "                    bounds = (f'left={_rect.left}, top={_rect.top}, right={_rect.right}, '\n"
+    "                              f'bottom={_rect.bottom}, size={_rect.right - _rect.left}×{_rect.bottom - _rect.top}')\n"
+    "            except Exception as _bounds_error:\n"
+    "                bounds = f'недоступні ({type(_bounds_error).__name__})'\n"
+    "            raise RuntimeError(\n"
+    "                'Вікно гри не займає весь основний екран. '\n"
+    "                f'Діагностика: вікно={title or process_name!r}; межі=[{bounds}]; '\n"
+    "                f'екран={screen_size[0]}×{screen_size[1]}; '\n"
+    "                'перевір, що перед скануванням активне саме вікно гри на основному моніторі.'\n"
+    "            )"
+)
+if new_error in main_data:
+    print("ALREADY SET fullscreen geometry diagnostics")
+else:
+    if main_data.count(old_error) != 1:
+        raise RuntimeError(
+            "Could not safely patch fullscreen geometry diagnostic: "
+            f"expected one generic error, found {main_data.count(old_error)}"
+        )
+    main_data = main_data.replace(old_error, new_error, 1)
+    write(p, main_data)
+    print("PATCHED fullscreen error: report HWND bounds and actual screen size")
+
+
 # Final assertions before this patched source is allowed to compile.
 _, data = read(main)
 for name in (
