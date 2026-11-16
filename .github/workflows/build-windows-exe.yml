@@ -95,7 +95,11 @@ jobs:
             $code = $LASTEXITCODE
           } finally { Pop-Location }
           if (Test-Path $log) { Get-Content $log -Tail 180 }
-          if ($code -ne 0) { throw "Build failed with exit code $code." }
+          if ($code -ne 0) {
+            $testsLog = Join-Path $env:NGMS_SOURCE_ROOT 'NGMS_BUILD_TESTS.log'
+            if (Test-Path $testsLog) { Copy-Item $testsLog (Join-Path $env:RUNNER_TEMP 'NGMS_BUILD_TESTS.log') -Force }
+            throw "Build failed with exit code $code."
+          }
           $exe = Join-Path $env:NGMS_SOURCE_ROOT 'dist\NG Market Scanner.exe'
           if (-not (Test-Path $exe)) { throw 'Build script did not produce dist\NG Market Scanner.exe.' }
           if ((Get-Item $exe).Length -lt 50MB) { throw 'EXE is unexpectedly small; refusing to publish.' }
@@ -152,6 +156,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NGMS-Windows-Build-Diagnostics
-          path: ${{ runner.temp }}\ngms-build.log
+          path: |
+            ${{ runner.temp }}\ngms-build.log
+            ${{ runner.temp }}\NGMS_BUILD_TESTS.log
           if-no-files-found: ignore
           retention-days: 7
