@@ -94,7 +94,7 @@ def set_elapsed_assignment(text, variable, constant):
     named_cooldowns = re.findall(r"POST_PURCHASE_CANCEL_[A-Z0-9_]*SECONDS", block)
     if named_cooldowns:
         for name in named_cooldowns:
-            if re.search(rf"(?m)^\s*{re.escape(name)}\s*=\s*3\.00\s*$", text):
+            if f"{name} = 3.00" in text:
                 print(f"ALREADY SAFE named cooldown: {variable} uses {name}")
                 return text, True
     pat = re.compile(r"(>=\s*)[0-9]+(?:\.[0-9]+)?")
