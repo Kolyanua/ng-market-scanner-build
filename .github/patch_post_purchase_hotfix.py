@@ -475,7 +475,7 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
     # Append the standalone function and bind it as a static method so both
     # PurchaseWorker._window_covers_screen(...) and self._window_covers_screen(...)
     # keep the same call shape.
-    action_data += "\\n" + tolerant + "\\nPurchaseWorker._window_covers_screen = staticmethod(_ngms_window_covers_primary_monitor)\\n"
+    action_data += "\n" + tolerant + "\nPurchaseWorker._window_covers_screen = staticmethod(_ngms_window_covers_primary_monitor)\n"
     write(p, action_data)
     print("PATCHED fullscreen geometry: tolerant primary-monitor coverage for laptop fullscreen/borderless")
 else:
