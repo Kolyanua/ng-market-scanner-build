@@ -28,11 +28,12 @@ def set_numeric(rel, name, value, anchor=None, optional=False):
     matches = list(pattern.finditer(data))
     if len(matches) == 1:
         m = matches[0]
-        if float(m.group(2)) == float(value):
-            print(f"ALREADY SET {name}={value}")
+        target_text = f"{value:.2f}" if isinstance(value, float) else str(value)
+        if m.group(2) == target_text:
+            print(f"ALREADY SET {name}={target_text}")
             return True
-        write(p, data[:m.start()] + f"{m.group(1)}{name} = {value:.2f}" + data[m.end():])
-        print(f"SET {name}={value}")
+        write(p, data[:m.start()] + f"{m.group(1)}{name} = {target_text}" + data[m.end():])
+        print(f"SET {name}={target_text}")
         return True
     if len(matches) > 1:
         raise RuntimeError(f"Duplicate constant {name} in {rel}: {len(matches)} matches")
