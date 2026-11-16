@@ -182,8 +182,9 @@ if "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00" not in data:
 else:
     print("ALREADY SET POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS=3")
 
-# Older archive variants reuse this named timer for both retry and return-to-market grace.
+# Older archive variants reuse these named timers for retry and return-to-market grace.
 set_numeric(main, "POST_PURCHASE_CANCEL_RETRY_SECONDS", 3.0, optional=True)
+set_numeric(main, "POST_PURCHASE_CANCEL_BACK_GRACE_SECONDS", 3.0, optional=True)
 
 # Retry Cancel and Back are gated by the 3-second post-cancel timer.
 p, data = read(main)
