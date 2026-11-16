@@ -266,18 +266,20 @@ if p is not None:
 
 # Final assertions before this patched source is allowed to compile.
 _, data = read(main)
-for line in (
-    "POST_PURCHASE_CONFIRM_GRACE_SECONDS = 3.00",
-    "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS = 3.00",
-    "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS = 3.00",
-    "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00",
+for name in (
+    "POST_PURCHASE_CONFIRM_GRACE_SECONDS",
+    "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS",
+    "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS",
+    "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS",
 ):
-    if line not in data:
-        raise RuntimeError(f"Final validation failed: {line}")
+    if not re.search(rf"(?m)^[ \\t]*{re.escape(name)}\\s*=\\s*3(?:\\.0+)?(?:\\s+#.*)?$", data):
+        raise RuntimeError(f"Final validation failed: {name} is not set to 3 seconds")
 if guard_marker == "nonmodal":
-    if "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 3.00" not in data and "and nonmodal_for >= 3.00" not in data:
+    if not (re.search(r"(?m)^\\s*POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS\\s*=\\s*3(?:\\.0+)?\\s*$", data)
+            or re.search(r"(?m)^\\s*and nonmodal_for\\s*>=\\s*3(?:\\.0+)?\\s*$", data)):
         raise RuntimeError("Final validation failed: nonmodal 3-second guard missing")
 else:
-    if "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00" not in data and "and unknown_for >= 3.00" not in data:
+    if not (re.search(r"(?m)^\\s*POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS\\s*=\\s*3(?:\\.0+)?\\s*$", data)
+            or re.search(r"(?m)^\\s*and unknown_for\\s*>=\\s*3(?:\\.0+)?\\s*$", data)):
         raise RuntimeError("Final validation failed: unknown 3-second guard missing")
 print("Post-purchase 3-second hotfix applied and verified for", guard_marker, "source variant.")
