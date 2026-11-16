@@ -489,7 +489,7 @@ else:
 # The repository contains multiple similarly named ZIPs; some older archives
 # still use a single DXcam output and a single MSS grab. Replace only the capture
 # plumbing; recognition, OCR eligibility, and purchase actions are left untouched.
-_CAPTURE_COMPAT_VERSION = "1.2.82-laptop-dxcam-output-retry"
+_CAPTURE_COMPAT_VERSION = "1.2.83-dxcam-circuit-breaker"
 _CAPTURE_COMPAT_SOURCE = r'''def _dxcam_primary_output_candidates(dxcam_module):
     """Return DXcam output pairs Windows marks as the primary display."""
     output_info_fn = getattr(dxcam_module, "output_info", None)
@@ -606,7 +606,10 @@ def _capture_market_frame(grid, np_module, screen_size_override=None):
     prefetched_frame = None
     size = tuple(int(v) for v in screen_size_override) if screen_size_override else _primary_screen_size()
 
-    if size and len(size) == 2 and size[0] >= 320 and size[1] >= 240:
+    # If DXcam failed once on this machine/session, do not repeatedly initialize
+    # DirectX/WinRT every scan cycle. Continue on the stable MSS fallback instead.
+    if (not globals().get("_MARKET_CAPTURE_DXCAM_DISABLED", False)
+            and size and len(size) == 2 and size[0] >= 320 and size[1] >= 240):
         try:
             region = _market_capture_region(grid, size)
             with _MARKET_CAPTURE_LOCK:
@@ -659,6 +662,10 @@ def _capture_market_frame(grid, np_module, screen_size_override=None):
                 )
         except Exception as capture_exc:
             _MARKET_CAPTURE_LAST_ERROR = f"{type(capture_exc).__name__}: {capture_exc}"
+            # Circuit breaker: avoid repeatedly opening failed DXGI/WinRT capture
+            # objects on every fast scan tick, which can destabilize some game/GPU stacks.
+            globals()["_MARKET_CAPTURE_DXCAM_DISABLED"] = True
+            globals()["_MARKET_CAPTURE_DXCAM_DISABLED_REASON"] = _MARKET_CAPTURE_LAST_ERROR
             with _MARKET_CAPTURE_LOCK:
                 if _MARKET_CAPTURE_CAMERA is not None:
                     _close_market_capture_locked()
@@ -818,11 +825,15 @@ class LaptopCaptureCompatibilityV1282Tests(unittest.TestCase):
         scanner_core._DETAIL_CAPTURE = None
         scanner_core._DETAIL_CAPTURE_FACTORY = None
         scanner_core._MARKET_CAPTURE_LAST_ERROR = ""
+        scanner_core._MARKET_CAPTURE_DXCAM_DISABLED = False
+        scanner_core._MARKET_CAPTURE_DXCAM_DISABLED_REASON = ""
 
     def tearDown(self):
         scanner_core.close_market_capture()
         scanner_core._DETAIL_CAPTURE = None
         scanner_core._DETAIL_CAPTURE_FACTORY = None
+        scanner_core._MARKET_CAPTURE_DXCAM_DISABLED = False
+        scanner_core._MARKET_CAPTURE_DXCAM_DISABLED_REASON = ""
 
     def test_primary_output_enumeration_selects_the_actual_primary_adapter(self):
         fake_dxcam = types.SimpleNamespace(output_info=lambda: (
@@ -886,6 +897,24 @@ class LaptopCaptureCompatibilityV1282Tests(unittest.TestCase):
         self.assertIn("DXGI initialization failure", message)
         self.assertIn("persistent BitBlt 14007", message)
         self.assertIn("fresh BitBlt 14007", message)
+
+    def test_dxcam_failure_is_latched_and_not_reinitialized_each_cycle(self):
+        fake_dxcam = types.SimpleNamespace(
+            output_info=lambda: "Device[0] Output[0]: Res:(1920, 1080) Rot:0 Primary:True",
+            create=MagicMock(side_effect=RuntimeError("simulated DXcam init failure")),
+        )
+        fake_mss_module = types.ModuleType("mss")
+        good_mss = _fake_capture()
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam, "mss": fake_mss_module}):
+            with patch.object(scanner_core, "_get_detail_capture", return_value=good_mss):
+                first = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+                attempts_after_failure = fake_dxcam.create.call_count
+                second = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        self.assertGreater(attempts_after_failure, 0)
+        self.assertEqual(fake_dxcam.create.call_count, attempts_after_failure)
+        self.assertTrue(scanner_core._MARKET_CAPTURE_DXCAM_DISABLED)
+        self.assertEqual(first[4], "MSS persistent full-screen fallback")
+        self.assertEqual(second[4], "MSS persistent full-screen fallback")
 
     def test_purchase_action_logic_is_not_changed_for_capture_hotfix(self):
         actions = (ROOT / "scanner_actions.py").read_text(encoding="utf-8")
