@@ -89,6 +89,12 @@ def set_elapsed_assignment(text, variable, constant):
         return text, True
     if "last_attempt" not in block:
         raise RuntimeError(f"Cooldown assignment for {variable} has unexpected shape:\n{block}")
+    named_cooldowns = re.findall(r"POST_PURCHASE_CANCEL_[A-Z0-9_]*SECONDS", block)
+    if named_cooldowns:
+        for name in named_cooldowns:
+            if re.search(rf"(?m)^\s*{re.escape(name)}\s*=\s*3\.00\s*$", text):
+                print(f"ALREADY SAFE named cooldown: {variable} uses {name}")
+                return text, True
     pat = re.compile(r"(>=\s*)[0-9]+(?:\.[0-9]+)?")
     block2, n = pat.subn(rf"\g<1>{constant}", block, count=1)
     if n != 1:
@@ -175,6 +181,9 @@ if "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00" not in data:
 else:
     print("ALREADY SET POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS=3")
 
+# Older archive variants reuse this named timer for both retry and return-to-market grace.
+set_numeric(main, "POST_PURCHASE_CANCEL_RETRY_SECONDS", 3.0, optional=True)
+
 # Retry Cancel and Back are gated by the 3-second post-cancel timer.
 p, data = read(main)
 retry_pattern = re.compile(
@@ -186,6 +195,8 @@ if len(ms) == 1:
     data = data[:m.start()] + m.group(1) + "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" + m.group(2) + data[m.end():]
     write(p, data)
     print("SET retry_due 3-second cooldown")
+elif len(ms) == 0 and "retry_due" in data and ("POST_PURCHASE_CANCEL_RETRY_SECONDS" in data or "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" in data):
+    print("ALREADY SAFE: retry_due uses a named 3-second cancel cooldown")
 elif len(ms) == 0 and "retry_due" in data and "now-last_attempt >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" not in data:
     lines = data.splitlines(keepends=True)
     idx = next((i for i, x in enumerate(lines) if re.match(r"^[ \t]*retry_due\s*=", x)), None)
