@@ -482,3 +482,436 @@ def _ngms_window_covers_primary_monitor(hwnd, screen_size=None):
     print("PATCHED fullscreen geometry: tolerant primary-monitor coverage for laptop fullscreen/borderless")
 else:
     print("ALREADY SET tolerant primary-monitor fullscreen geometry")
+
+
+# NGMS_CAPTURE_COMPAT_PATCH_V1282
+# Backport the laptop capture-compatibility fix into older source archives.
+# The repository contains multiple similarly named ZIPs; some older archives
+# still use a single DXcam output and a single MSS grab. Replace only the capture
+# plumbing; recognition, OCR eligibility, and purchase actions are left untouched.
+_CAPTURE_COMPAT_VERSION = "1.2.82-laptop-dxcam-output-retry"
+_CAPTURE_COMPAT_SOURCE = r'''def _dxcam_primary_output_candidates(dxcam_module):
+    """Return DXcam output pairs Windows marks as the primary display."""
+    output_info_fn = getattr(dxcam_module, "output_info", None)
+    if not callable(output_info_fn):
+        return [(0, 0)], False
+    try:
+        output_info = output_info_fn()
+    except Exception:
+        return [(0, 0)], True
+
+    candidates = []
+    for line in str(output_info or "").splitlines():
+        match = re.search(r"Device\\[(\\d+)\\]\\s+Output\\[(\\d+)\\]", line, re.IGNORECASE)
+        primary = re.search(r"\\bPrimary\\s*:\\s*True\\b", line, re.IGNORECASE)
+        if match and primary:
+            pair = (int(match.group(1)), int(match.group(2)))
+            if pair not in candidates:
+                candidates.append(pair)
+    return (candidates or [(0, 0)]), True
+
+
+def _start_dxcam_primary_capture(dxcam_module, region, screen_size, np_module):
+    """Try DXGI and, when available, WinRT on the adapter that owns the primary screen."""
+    candidates, has_output_enumeration = _dxcam_primary_output_candidates(dxcam_module)
+    backends = ("dxgi", "winrt") if has_output_enumeration else ("dxgi",)
+    errors = []
+    expected_roi = (region[3] - region[1], region[2] - region[0])
+    expected_full = (int(screen_size[1]), int(screen_size[0]))
+
+    for device_idx, output_idx in candidates:
+        for backend_name in backends:
+            for output_color, color_label in (
+                ("BGRA", "BGRA fast path"),
+                ("BGR", "BGR compatibility fallback"),
+            ):
+                camera = None
+                kwargs = {"output_idx": output_idx, "output_color": output_color, "max_buffer_len": 2}
+                if device_idx != 0:
+                    kwargs["device_idx"] = device_idx
+                if backend_name == "winrt":
+                    kwargs["backend"] = "winrt"
+                try:
+                    camera = dxcam_module.create(**kwargs)
+                except Exception as create_exc:
+                    errors.append(
+                        f"device={device_idx},output={output_idx},backend={backend_name},"
+                        f"color={output_color} create: {type(create_exc).__name__}: {create_exc}"
+                    )
+                    continue
+
+                capture_origin = (region[0], region[1])
+                used_region = True
+                try:
+                    try:
+                        camera.start(region=region, target_fps=_MARKET_CAPTURE_FPS, video_mode=False)
+                    except TypeError:
+                        try:
+                            camera.stop()
+                        except Exception:
+                            pass
+                        camera.start(target_fps=_MARKET_CAPTURE_FPS, video_mode=False)
+                        capture_origin = (0, 0)
+                        used_region = False
+
+                    frame, timestamp, frame_is_ring_buffer_view = _read_latest_dxcam_frame(
+                        camera, wait_timeout_seconds=0.040, include_view_info=True
+                    )
+                    frame = np_module.asarray(frame)
+                    if frame.ndim != 3 or frame.shape[2] < 3 or frame.size == 0:
+                        raise RuntimeError("DXcam returned an empty or invalid frame")
+                    expected = expected_roi if used_region else expected_full
+                    if frame.shape[:2] != expected:
+                        raise RuntimeError(
+                            f"DXcam frame shape mismatch: {frame.shape[:2]} != {expected}"
+                        )
+                    return {
+                        "camera": camera,
+                        "frame": frame,
+                        "timestamp": timestamp,
+                        "frame_is_ring_buffer_view": frame_is_ring_buffer_view,
+                        "origin": capture_origin,
+                        "color_mode": color_label,
+                        "backend": backend_name,
+                        "device_idx": device_idx,
+                        "output_idx": output_idx,
+                        "used_region": used_region,
+                    }
+                except Exception as capture_exc:
+                    errors.append(
+                        f"device={device_idx},output={output_idx},backend={backend_name},"
+                        f"color={output_color} start/capture: {type(capture_exc).__name__}: {capture_exc}"
+                    )
+                    _dispose_market_camera(camera)
+                    # A start/capture failure is independent of output color. Try the next backend.
+                    break
+
+    detail = " | ".join(errors[-8:]) or "no DXcam primary-output candidate was usable"
+    raise RuntimeError(f"DXcam primary-display capture attempts failed: {detail}")
+
+
+def _capture_market_frame(grid, np_module, screen_size_override=None):
+    """Capture the configured market ROI, preferring the actual primary DXGI/WinRT output.
+
+    MSS is used only as a compatibility fallback. If its GDI/BitBlt session fails,
+    create a new session on the scanning thread and retry once. This specifically
+    covers laptop hybrid-GPU and thread-affine GDI capture failures.
+    """
+    global _MARKET_CAPTURE_CAMERA, _MARKET_CAPTURE_REGION, _MARKET_CAPTURE_SCREEN_SIZE
+    global _MARKET_CAPTURE_ORIGIN, _MARKET_CAPTURE_DESKTOP_ORIGIN
+    global _MARKET_CAPTURE_BACKEND, _MARKET_CAPTURE_COLOR_MODE, _MARKET_CAPTURE_LAST_ERROR
+    global _DETAIL_CAPTURE, _DETAIL_CAPTURE_FACTORY
+
+    started = time.perf_counter()
+    prefetched_frame = None
+    size = tuple(int(v) for v in screen_size_override) if screen_size_override else _primary_screen_size()
+
+    if size and len(size) == 2 and size[0] >= 320 and size[1] >= 240:
+        try:
+            region = _market_capture_region(grid, size)
+            with _MARKET_CAPTURE_LOCK:
+                if (_MARKET_CAPTURE_CAMERA is None or _MARKET_CAPTURE_REGION != region
+                        or _MARKET_CAPTURE_SCREEN_SIZE != size):
+                    _close_market_capture_locked()
+                    import dxcam
+                    selected = _start_dxcam_primary_capture(dxcam, region, size, np_module)
+                    _MARKET_CAPTURE_CAMERA = selected["camera"]
+                    _MARKET_CAPTURE_REGION = region
+                    _MARKET_CAPTURE_SCREEN_SIZE = size
+                    _MARKET_CAPTURE_ORIGIN = selected["origin"]
+                    _MARKET_CAPTURE_DESKTOP_ORIGIN = (0, 0)
+                    _MARKET_CAPTURE_COLOR_MODE = selected["color_mode"]
+                    origin_label = "ROI" if selected["used_region"] else "full-frame API fallback"
+                    _MARKET_CAPTURE_BACKEND = (
+                        f"DXGI/DXcam persistent {origin_label} {selected['color_mode']} "
+                        f"via {selected['backend']} device={selected['device_idx']} "
+                        f"output={selected['output_idx']} @120 target"
+                    )
+                    prefetched_frame = (
+                        selected["frame"], selected["timestamp"], selected["frame_is_ring_buffer_view"]
+                    )
+
+                camera = _MARKET_CAPTURE_CAMERA
+                if prefetched_frame is None:
+                    frame, timestamp, frame_is_ring_buffer_view = _read_latest_dxcam_frame(
+                        camera, wait_timeout_seconds=0.002, include_view_info=True
+                    )
+                    frame = np_module.asarray(frame)
+                else:
+                    frame, timestamp, frame_is_ring_buffer_view = prefetched_frame
+
+                if frame.ndim != 3 or frame.shape[2] < 3 or frame.size == 0:
+                    raise RuntimeError("DXcam frame has unexpected shape")
+                origin = _MARKET_CAPTURE_ORIGIN
+                expected_roi = (region[3] - region[1], region[2] - region[0])
+                if origin != (0, 0) and frame.shape[:2] != expected_roi:
+                    raise RuntimeError(f"DXcam ROI shape mismatch: {frame.shape[:2]} != {expected_roi}")
+                if origin == (0, 0) and frame.shape[:2] != (size[1], size[0]):
+                    raise RuntimeError(f"DXcam full-frame shape mismatch: {frame.shape[:2]} != {(size[1], size[0])}")
+                if _MARKET_CAPTURE_COLOR_MODE.startswith("BGRA") or frame_is_ring_buffer_view:
+                    screenshot = frame[:, :, :3].copy()
+                else:
+                    screenshot = frame[:, :, :3]
+                _MARKET_CAPTURE_LAST_ERROR = ""
+                return (
+                    screenshot, origin, _MARKET_CAPTURE_DESKTOP_ORIGIN, size,
+                    _MARKET_CAPTURE_BACKEND, max(0.0, time.perf_counter() - started), timestamp
+                )
+        except Exception as capture_exc:
+            _MARKET_CAPTURE_LAST_ERROR = f"{type(capture_exc).__name__}: {capture_exc}"
+            with _MARKET_CAPTURE_LOCK:
+                if _MARKET_CAPTURE_CAMERA is not None:
+                    _close_market_capture_locked()
+
+    # First MSS grab may use a session warmed on the GUI thread. On failure,
+    # discard that GDI/DC context and make a fresh session on the current worker.
+    import mss as mss_module
+    with _DETAIL_CAPTURE_LOCK:
+        capture = _get_detail_capture(mss_module)
+        monitor = capture.monitors[1] if len(capture.monitors) > 1 else capture.monitors[0]
+        desktop_left = int(monitor.get("left", 0))
+        desktop_top = int(monitor.get("top", 0))
+        screen = (int(monitor.get("width", 0)), int(monitor.get("height", 0)))
+        if screen[0] <= 0 or screen[1] <= 0:
+            raise RuntimeError("MSS did not report primary-monitor dimensions")
+        try:
+            raw = capture.grab(monitor)
+            backend = "MSS persistent full-screen fallback"
+        except Exception as persistent_exc:
+            previous = _DETAIL_CAPTURE if _DETAIL_CAPTURE is not None else capture
+            _DETAIL_CAPTURE = None
+            _DETAIL_CAPTURE_FACTORY = None
+            if previous is not None:
+                try:
+                    previous.close()
+                except Exception:
+                    pass
+            try:
+                capture = _get_detail_capture(mss_module)
+                monitor = capture.monitors[1] if len(capture.monitors) > 1 else capture.monitors[0]
+                desktop_left = int(monitor.get("left", 0))
+                desktop_top = int(monitor.get("top", 0))
+                screen = (int(monitor.get("width", 0)), int(monitor.get("height", 0)))
+                if screen[0] <= 0 or screen[1] <= 0:
+                    raise RuntimeError("MSS retry did not report primary-monitor dimensions")
+                raw = capture.grab(monitor)
+                backend = "MSS fresh-session retry fallback"
+                _MARKET_CAPTURE_LAST_ERROR = (
+                    f"DXcam capture failed: {_MARKET_CAPTURE_LAST_ERROR or 'not available'}; "
+                    f"previous MSS session recovered after: "
+                    f"{type(persistent_exc).__name__}: {persistent_exc}"
+                )
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    "Screen capture failed on all available paths. "
+                    f"DXcam attempts: {_MARKET_CAPTURE_LAST_ERROR or 'not available'}; "
+                    f"persistent MSS BitBlt: {type(persistent_exc).__name__}: {persistent_exc}; "
+                    f"fresh MSS retry: {type(retry_exc).__name__}: {retry_exc}. "
+                    "This happens before OCR/vehicle analysis. Keep the game visible on "
+                    "the primary monitor and restart the scanner after the capture fix."
+                ) from retry_exc
+
+        screenshot = np_module.asarray(raw)[:, :, :3].copy()
+    return (
+        screenshot, (0, 0), (desktop_left, desktop_top), screen,
+        backend, max(0.0, time.perf_counter() - started), None
+    )
+'''
+
+
+def patch_capture_compatibility():
+    core_path = root / "scanner_core.py"
+    if not core_path.is_file():
+        raise RuntimeError("Cannot apply capture compatibility fix: scanner_core.py missing")
+    core_data = core_path.read_text(encoding="utf-8")
+    marker_line = f'CAPTURE_COMPAT_PATCH_VERSION = "{_CAPTURE_COMPAT_VERSION}"'
+    already_modern = (
+        marker_line in core_data
+        and "def _dxcam_primary_output_candidates(" in core_data
+        and "MSS fresh-session retry fallback" in core_data
+    )
+    if already_modern:
+        print("ALREADY SET laptop capture compatibility patch 1.2.82")
+    else:
+        start_marker = "def _capture_market_frame(grid, np_module, screen_size_override=None):"
+        end_marker = "\ntry:\n    import atexit as _capture_atexit"
+        start = core_data.find(start_marker)
+        end = core_data.find(end_marker, start + len(start_marker)) if start >= 0 else -1
+        if start < 0 or end < 0:
+            raise RuntimeError(
+                "Cannot safely patch capture backend: expected one _capture_market_frame "
+                "definition ending before _capture_atexit registration"
+            )
+        if core_data.count(start_marker) != 1:
+            raise RuntimeError("Refusing capture patch: duplicate _capture_market_frame definitions")
+        core_data = core_data[:start] + _CAPTURE_COMPAT_SOURCE + core_data[end:]
+        if "CAPTURE_COMPAT_PATCH_VERSION" not in core_data:
+            cap_match = re.search(
+                r'(?m)^MARKET_CAPTURE_PATCH_VERSION\s*=\s*[^\r\n]+$',
+                core_data
+            )
+            if not cap_match:
+                raise RuntimeError("Cannot add capture patch marker: MARKET_CAPTURE_PATCH_VERSION missing")
+            core_data = (
+                core_data[:cap_match.end()]
+                + f'\nCAPTURE_COMPAT_PATCH_VERSION = "{_CAPTURE_COMPAT_VERSION}"'
+                + core_data[cap_match.end():]
+            )
+        else:
+            core_data = re.sub(
+                r'(?m)^CAPTURE_COMPAT_PATCH_VERSION\s*=\s*["\\'][^"\\']*["\\']\s*$',
+                marker_line,
+                core_data,
+                count=1,
+            )
+        core_path.write_text(core_data, encoding="utf-8", newline="\n")
+        print("PATCHED scanner_core.py: primary-output DXGI/WinRT selection and fresh MSS retry")
+
+    # Regression tests exercise hybrid-GPU selection, WinRT fallback, and BitBlt session renewal.
+    test_path = root / "tests" / "test_v1282_laptop_capture_compat.py"
+    if not test_path.exists():
+        test_path.parent.mkdir(parents=True, exist_ok=True)
+        test_path.write_text(r'''import sys
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+
+try:
+    from PySide6.QtCore import QThread, Signal  # noqa: F401
+except Exception:
+    pyside = types.ModuleType("PySide6")
+    qtcore = types.ModuleType("PySide6.QtCore")
+    class QThread:
+        pass
+    class _Signal:
+        def __init__(self, *args, **kwargs):
+            pass
+    qtcore.QThread = QThread
+    qtcore.Signal = _Signal
+    pyside.QtCore = qtcore
+    sys.modules.setdefault("PySide6", pyside)
+    sys.modules.setdefault("PySide6.QtCore", qtcore)
+
+import scanner_core
+
+ROOT = Path(__file__).resolve().parents[1]
+GRID = {"left": .153, "top": .095, "right": .985, "bottom": .895, "cols": 5, "rows": 3}
+SCREEN = (1920, 1080)
+
+
+def _fake_capture(frame=None, grab_error=None):
+    capture = MagicMock()
+    capture.monitors = [{}, {"left": 0, "top": 0, "width": SCREEN[0], "height": SCREEN[1]}]
+    if grab_error is not None:
+        capture.grab.side_effect = grab_error
+    else:
+        capture.grab.return_value = frame if frame is not None else np.zeros((SCREEN[1], SCREEN[0], 4), dtype=np.uint8)
+    return capture
+
+
+class LaptopCaptureCompatibilityV1282Tests(unittest.TestCase):
+    def setUp(self):
+        scanner_core.close_market_capture()
+        scanner_core._DETAIL_CAPTURE = None
+        scanner_core._DETAIL_CAPTURE_FACTORY = None
+        scanner_core._MARKET_CAPTURE_LAST_ERROR = ""
+
+    def tearDown(self):
+        scanner_core.close_market_capture()
+        scanner_core._DETAIL_CAPTURE = None
+        scanner_core._DETAIL_CAPTURE_FACTORY = None
+
+    def test_primary_output_enumeration_selects_the_actual_primary_adapter(self):
+        fake_dxcam = types.SimpleNamespace(output_info=lambda: (
+            "Device[0] Output[0]: Res:(1920, 1080) Rot:0 Primary:False\n"
+            "Device[1] Output[0]: Res:(1920, 1080) Rot:0 Primary:True\n"
+        ))
+        candidates, enumerated = scanner_core._dxcam_primary_output_candidates(fake_dxcam)
+        self.assertEqual(candidates, [(1, 0)])
+        self.assertTrue(enumerated)
+
+    def test_winrt_retries_the_enumerated_primary_adapter_after_dxgi_failure(self):
+        region = scanner_core._market_capture_region(GRID, SCREEN)
+        h, w = region[3] - region[1], region[2] - region[0]
+        frame = np.zeros((h, w, 4), dtype=np.uint8)
+        dxgi_camera = MagicMock()
+        dxgi_camera.start.side_effect = RuntimeError("simulated DXGI duplication failure")
+        winrt_camera = MagicMock()
+        winrt_camera.get_latest_frame.return_value = (frame, 125.0)
+        fake_dxcam = types.SimpleNamespace(
+            output_info=lambda: "Device[1] Output[0]: Res:(1920, 1080) Rot:0 Primary:True",
+            create=MagicMock(side_effect=[dxgi_camera, winrt_camera]),
+        )
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam}):
+            captured = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        self.assertEqual(fake_dxcam.create.call_count, 2)
+        self.assertEqual(fake_dxcam.create.call_args_list[0].kwargs.get("device_idx"), 1)
+        self.assertEqual(fake_dxcam.create.call_args_list[0].kwargs.get("output_color"), "BGRA")
+        self.assertEqual(fake_dxcam.create.call_args_list[1].kwargs.get("backend"), "winrt")
+        self.assertEqual(captured[4].split(" via ")[1].split()[0], "winrt")
+        self.assertEqual(captured[0].shape, (h, w, 3))
+        self.assertEqual(captured[6], 125.0)
+
+    def test_persistent_mss_bitblt_failure_recreates_capture_session_once(self):
+        bad_camera = MagicMock()
+        bad_camera.start.side_effect = RuntimeError("simulated DXcam unavailable")
+        fake_dxcam = types.SimpleNamespace(create=MagicMock(return_value=bad_camera))
+        bad_mss = _fake_capture(grab_error=OSError("BitBlt stale GDI session"))
+        fresh_mss = _fake_capture()
+        scanner_core._DETAIL_CAPTURE = bad_mss
+        fake_mss_module = types.ModuleType("mss")
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam, "mss": fake_mss_module}):
+            with patch.object(scanner_core, "_get_detail_capture", side_effect=[bad_mss, fresh_mss]):
+                captured = scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        self.assertEqual(captured[4], "MSS fresh-session retry fallback")
+        self.assertEqual(captured[0].shape, (SCREEN[1], SCREEN[0], 3))
+        bad_mss.close.assert_called_once()
+        self.assertIn("previous MSS session recovered", scanner_core._MARKET_CAPTURE_LAST_ERROR)
+
+    def test_total_capture_failure_reports_both_dxcam_and_mss_causes(self):
+        bad_camera = MagicMock()
+        bad_camera.start.side_effect = RuntimeError("DXGI initialization failure")
+        fake_dxcam = types.SimpleNamespace(create=MagicMock(return_value=bad_camera))
+        bad_mss_1 = _fake_capture(grab_error=OSError("persistent BitBlt 14007"))
+        bad_mss_2 = _fake_capture(grab_error=OSError("fresh BitBlt 14007"))
+        fake_mss_module = types.ModuleType("mss")
+        with patch.dict(sys.modules, {"dxcam": fake_dxcam, "mss": fake_mss_module}):
+            with patch.object(scanner_core, "_get_detail_capture", side_effect=[bad_mss_1, bad_mss_2]):
+                with self.assertRaisesRegex(RuntimeError, "all available paths") as caught:
+                    scanner_core._capture_market_frame(GRID, np, screen_size_override=SCREEN)
+        message = str(caught.exception)
+        self.assertIn("DXGI initialization failure", message)
+        self.assertIn("persistent BitBlt 14007", message)
+        self.assertIn("fresh BitBlt 14007", message)
+
+    def test_purchase_action_logic_is_not_changed_for_capture_hotfix(self):
+        actions = (ROOT / "scanner_actions.py").read_text(encoding="utf-8")
+        logic = (ROOT / "scanner_core_logic.py").read_text(encoding="utf-8")
+        self.assertIn("CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM", actions)
+        self.assertIn("def match_catalog_model(", logic)
+        self.assertIn("def _resume_continuous_scan_after_action(", (ROOT / "main.py").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+''', encoding="utf-8", newline="\n")
+        print("ADDED tests/test_v1282_laptop_capture_compat.py")
+
+    # The regression test checks these marker strings in the two official builders.
+    for rel in ("build_single_exe_internal.bat", "BUILD_2K_PERSISTENT_DXCAM_v1.2.71.bat"):
+        build_path = root / rel
+        if build_path.is_file():
+            text_value = build_path.read_text(encoding="utf-8-sig", errors="replace")
+            if _CAPTURE_COMPAT_VERSION not in text_value:
+                build_path.write_text(
+                    text_value.rstrip() + f"\r\nrem Capture compatibility: {_CAPTURE_COMPAT_VERSION}\r\n",
+                    encoding="utf-8",
+                    newline="\r\n",
+                )
+                print(f"ADDED capture compatibility marker to {rel}")
+
+
+patch_capture_compatibility()
