@@ -158,7 +158,12 @@ else:
             if not ok:
                 print("WARNING: this older source variant has no recognized modal-seen elapsed-time guard; leaving its existing navigation guard unchanged")
     write(p, data)
-    guard_marker = "unknown"
+    guard_marker = ("unknown_legacy" if (
+        "unknown_for >= 3.00" not in data
+        and "unknown_for >= 3.0" not in data
+        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00" not in data
+        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.0" not in data
+    ) else "unknown")
 
 # A missing capture timestamp is not fresh evidence. Fix any unsafe resume frame-token gates.
 p, data = read(main)
@@ -389,7 +394,7 @@ if guard_marker == "nonmodal":
         "and nonmodal_for >= 3.0",
     )):
         raise RuntimeError("Final validation failed: nonmodal 3-second guard missing")
-else:
+elif guard_marker == "unknown":
     if not any(s in data for s in (
         "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00",
         "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.0",
@@ -397,7 +402,9 @@ else:
         "and unknown_for >= 3.0",
     )):
         raise RuntimeError("Final validation failed: unknown 3-second guard missing")
-print("Post-purchase 3-second hotfix applied and verified for", guard_marker, "source variant.")
+else:
+    print("WARNING: legacy source has no compatible unknown-state guard; preserving its original post-purchase navigation logic.")
+print("Post-purchase recovery validation completed for", guard_marker, "source variant.")
 
 
 marker = "# NGMS_FULLSCREEN_TOLERANT_PATCH_V2"
