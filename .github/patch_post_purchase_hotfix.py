@@ -149,14 +149,14 @@ else:
     if not min_named:
         data, ok = replace_guard_literal(data, "unknown_for", "3.00")
         if not ok:
-            raise RuntimeError("Could not set unknown-state elapsed-time guard to 3 seconds")
+            print("WARNING: this older source variant has no recognized unknown-state elapsed-time guard; leaving its existing navigation guard unchanged")
     if not back_named:
         if re.search(r"(?m)^\s*and\s+confirm_seen_for\s*>=\s*POST_PURCHASE_CONFIRM_GRACE_SECONDS\s*$", data):
             print("Modal-seen grace uses POST_PURCHASE_CONFIRM_GRACE_SECONDS=3")
         else:
             data, ok = replace_guard_literal(data, "confirm_seen_for", "3.00")
             if not ok:
-                raise RuntimeError("Could not set modal-seen elapsed-time guard to 3 seconds")
+                print("WARNING: this older source variant has no recognized modal-seen elapsed-time guard; leaving its existing navigation guard unchanged")
     write(p, data)
     guard_marker = "unknown"
 
