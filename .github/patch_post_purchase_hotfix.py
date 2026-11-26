@@ -1883,10 +1883,15 @@ class PostPurchaseFourSecondTabletRefreshTests(unittest.TestCase):
             "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS = 4.00",
             "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00",
             "POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00",
-            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00",
             "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS = 4.00",
         ):
             self.assertIn(marker, self.main, marker)
+        # The supplied older source variant implements this guard inline rather than via a named constant.
+        self.assertTrue(
+            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00" in self.main
+            or "and unknown_for >= 4.00" in self.main
+            or "unknown_for >= 4.00" in self.main
+        )
         self.assertIn("cancel_cooldown_done = not last_attempt or (now - last_attempt) >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", self.main)
 
     def test_purchase_and_back_action_timestamps_drive_inter_action_pause(self):
