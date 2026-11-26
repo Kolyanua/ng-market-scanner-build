@@ -1266,8 +1266,8 @@ PHONE_DETECTOR = r'''def _detect_phone_popup_in_frame(frame, screen_size, frame_
 p, core = read("scanner_core.py")
 core = replace_one(
     core,
-    'CAPTURE_COMPAT_PATCH_VERSION = "1.2.82-laptop-dxcam-output-retry"\n',
-    'CAPTURE_COMPAT_PATCH_VERSION = "1.2.82-laptop-dxcam-output-retry"\n'
+    'MARKET_RETURN_GATE_PATCH_VERSION = "1.2.75-market-return-state-gate"\n',
+    'MARKET_RETURN_GATE_PATCH_VERSION = "1.2.75-market-return-state-gate"\n'
     'PHONE_POPUP_DETECTION_PATCH_VERSION = "1.2.83-phone-popup-rail-detector"\n'
     'CHANGED_NON_GREEN_OCR_PATCH_VERSION = "1.2.83-changed-non-green-field-ocr"\n',
     "add v1.2.83 feature markers"
