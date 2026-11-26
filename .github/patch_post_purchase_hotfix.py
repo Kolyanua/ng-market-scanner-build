@@ -1623,6 +1623,7 @@ print("PATCH V1.2.83 PHONE RECOVERY + CHANGED-CARD OCR COMPLETE")
 
 
 # === BEGIN v1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH ===
+main = "main.py"  # restore path name after the previous patch block used "main" for source text
 # Keep the fast purchase clicks intact; only navigation after the final click is paced.
 p, data = read(main)
 
