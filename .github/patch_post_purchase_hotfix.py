@@ -1621,4 +1621,307 @@ write(p, build_data)
 
 print("PATCH V1.2.83 PHONE RECOVERY + CHANGED-CARD OCR COMPLETE")
 
+
+# === BEGIN v1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH ===
+# Keep the fast purchase clicks intact; only navigation after the final click is paced.
+p, data = read(main)
+
+# Expose an explicit 4-second inter-action timer in main.py.
+pause_constant = "POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00\n"
+if pause_constant not in data:
+    anchor = "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00\n"
+    if data.count(anchor) != 1:
+        raise RuntimeError("Cannot insert the v1.2.84 inter-action pause constant safely")
+    data = data.replace(anchor, anchor + pause_constant, 1)
+    write(p, data)
+    print("INSERTED POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS=4.00")
+else:
+    print("ALREADY SET POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS=4.00")
+
+# Track the time the purchase click chain completed and the moment Back was sent.
+p, data = read(main)
+data = replace_one(
+    data,
+    "        self._resume_scan_not_before = 0.0\n",
+    "        self._resume_scan_not_before = 0.0\n"
+    "        self._resume_purchase_action_completed_at = 0.0\n"
+    "        self._post_purchase_refresh_delay_pending = False\n",
+    "initialize post-purchase pacing state"
+)
+
+# Add a timestamp beside every reset of the Back-click latch; this is idempotent.
+lines = data.splitlines(keepends=True)
+updated_lines = []
+timestamp_reset_count = 0
+for i, line in enumerate(lines):
+    updated_lines.append(line)
+    if re.match(r"^[ \t]*self\._resume_market_back_attempted = False[ \t]*\r?\n?$", line):
+        indent = re.match(r"^([ \t]*)", line).group(1)
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        if not re.match(r"^[ \t]*self\._resume_market_back_attempted_at = 0\.0", next_line):
+            updated_lines.append(f"{indent}self._resume_market_back_attempted_at = 0.0\n")
+            timestamp_reset_count += 1
+data = "".join(updated_lines)
+if timestamp_reset_count:
+    write(p, data)
+    print(f"ADDED Back-click timestamp resets at {timestamp_reset_count} state resets")
+else:
+    if "self._resume_market_back_attempted_at = 0.0" not in data:
+        raise RuntimeError("Could not initialize Back-click timestamp")
+    print("ALREADY SET Back-click timestamp resets")
+
+p, data = read(main)
+data = replace_one(
+    data,
+    "            self._resume_after_purchase_navigation = bool(self._resume_scan_after_action and auto_confirm_enabled)\n",
+    "            self._resume_after_purchase_navigation = bool(self._resume_scan_after_action and auto_confirm_enabled)\n"
+    "            self._resume_purchase_action_completed_at = 0.0\n",
+    "reset purchase-completed timestamp for each new purchase"
+)
+data = replace_one(
+    data,
+    "        fast_no_postcheck = '[FAST_FLOW_NO_POSTCHECK]' in message_text\n",
+    "        fast_no_postcheck = '[FAST_FLOW_NO_POSTCHECK]' in message_text\n"
+    "        if self._resume_after_purchase_navigation and self._resume_scan_after_action and (success or fast_no_postcheck):\n"
+    "            self._resume_purchase_action_completed_at = time.monotonic()\n",
+    "record the end of the three-click purchase chain"
+)
+data = replace_all_exact(
+    data,
+    "                        self._resume_market_back_attempted = True\n",
+    "                        self._resume_market_back_attempted = True\n"
+    "                        self._resume_market_back_attempted_at = time.monotonic()\n",
+    1,
+    "timestamp purchase-recovery Back click"
+)
+data = replace_all_exact(
+    data,
+    "            self._resume_market_back_attempted = True\n",
+    "            self._resume_market_back_attempted = True\n"
+    "            self._resume_market_back_attempted_at = time.monotonic()\n",
+    1,
+    "timestamp auto-refresh recovery Back click"
+)
+write(p, data)
+
+# Start a forced tablet refresh after the catalog is back and 4 seconds have elapsed
+# since the later of the purchase-chain completion and the Back click.
+p, data = read(main)
+refresh_methods = r'''    def _post_purchase_refresh_delay_elapsed(self):
+        """Re-check the live screen after the four-second inter-action pause."""
+        self._post_purchase_refresh_delay_pending = False
+        if self._resume_scan_after_action:
+            QTimer.singleShot(0, self._resume_continuous_scan_after_action)
+
+    def _start_post_purchase_tablet_refresh(self):
+        """Force tablet -> Market -> Transport refresh before resuming scanning."""
+        if not self._resume_scan_after_action or not self._continuous_scan_requested:
+            return
+        target = (getattr(self, '_resume_market_target_hwnd', None)
+                  or getattr(self, '_scan_target_hwnd', None))
+        if target in (None, 0, '0'):
+            self._resume_scan_after_action = False
+            self._continuous_scan_requested = False
+            self.running = False
+            self.timer.stop()
+            self._set_start_button('start')
+            self.start_btn.setEnabled(True)
+            self.once_btn.setEnabled(True)
+            self.state.setText('● ОНОВЛЕННЯ ПІСЛЯ ПОКУПКИ НЕ ЗАПУЩЕНО')
+            self.logline('POST-PURCHASE: не визначене цільове вікно гри; планшетні кліки не виконувались, сканер зупинено безпечним способом.')
+            return
+        if os.name != 'nt':
+            self._resume_scan_after_action = False
+            self._continuous_scan_requested = False
+            self.running = False
+            self.timer.stop()
+            self._set_start_button('start')
+            self.start_btn.setEnabled(True)
+            self.once_btn.setEnabled(True)
+            self.state.setText('● ОНОВЛЕННЯ ПІСЛЯ ПОКУПКИ НЕ ДОСТУПНЕ')
+            self.logline('POST-PURCHASE: автоматичні клавіатурні дії доступні лише у Windows; невідомий екран не чіпав.')
+            return
+
+        self._auto_refresh_wait_reason = ''
+        self._auto_refresh_phone_recovery_attempts = 0
+        self._auto_refresh_pending = False
+        self._auto_refresh_in_progress = True
+        self._auto_refresh_target_hwnd = int(target)
+        self._auto_refresh_screen_size = tuple(self._physical_screen_size())
+        self._auto_refresh_sequence_id += 1
+        sequence_id = self._auto_refresh_sequence_id
+        self._resume_scan_after_action = False
+        self._resume_after_purchase_navigation = False
+        self._post_purchase_refresh_delay_pending = False
+        self.timer.stop()
+        self.once_btn.setEnabled(False)
+        self.state.setText('● ОНОВЛЕННЯ РИНКУ ПІСЛЯ ПОКУПКИ…')
+        self.logline('POST-PURCHASE: 4-секундні паузи виконано. Запускаю оновлення через планшет: ESC → ↓ → розблокування планшета → Маркет → Транспорт. Сканування відновиться тільки після підтвердження каталогу.')
+        if not self._auto_refresh_context_is_safe(sequence_id):
+            self._abort_auto_refresh_sequence('перед планшетним оновленням втрачено фокус гри або змінилась роздільність')
+            return
+        self._auto_refresh_run_step(
+            sequence_id, 'ESC — початок планшетного оновлення після покупки',
+            lambda seq=sequence_id: self._auto_refresh_send_key(seq, 0x1B), 400,
+            self._auto_refresh_open_tablet)
+
+'''
+finish_anchor = "    def _finish_continuous_resume_after_market_confirmed(self):\n"
+if "def _start_post_purchase_tablet_refresh(self):" not in data:
+    if data.count(finish_anchor) != 1:
+        raise RuntimeError("Cannot safely insert forced tablet refresh methods")
+    data = data.replace(finish_anchor, refresh_methods + finish_anchor, 1)
+    write(p, data)
+    print("ADDED forced tablet refresh methods")
+else:
+    print("ALREADY SET forced tablet refresh methods")
+
+p, data = read(main)
+old_finish_prefix = (
+    "        completed_auto_refresh = bool(self._auto_refresh_in_progress)\n"
+    "        self._auto_refresh_in_progress = False\n"
+)
+new_finish_prefix = (
+    "        completed_auto_refresh = bool(self._auto_refresh_in_progress)\n"
+    "        resuming_after_purchase = bool(self._resume_after_purchase_navigation and not completed_auto_refresh)\n"
+    "        if resuming_after_purchase:\n"
+    "            latest_action_at = max(\n"
+    "                float(getattr(self, '_resume_purchase_action_completed_at', 0.0) or 0.0),\n"
+    "                float(getattr(self, '_resume_market_back_attempted_at', 0.0) or 0.0),\n"
+    "            )\n"
+    "            remaining_pause = latest_action_at + POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS - time.monotonic()\n"
+    "            if remaining_pause > 0:\n"
+    "                if not self._post_purchase_refresh_delay_pending:\n"
+    "                    self._post_purchase_refresh_delay_pending = True\n"
+    "                    self.logline(f'POST-PURCHASE: каталог підтверджено; очікую ще {remaining_pause:.2f} с перед оновленням через планшет.')\n"
+    "                    QTimer.singleShot(max(1, int(remaining_pause * 1000)), self._post_purchase_refresh_delay_elapsed)\n"
+    "                return\n"
+    "            self._post_purchase_refresh_delay_pending = False\n"
+    "            self._start_post_purchase_tablet_refresh()\n"
+    "            return\n"
+    "        self._auto_refresh_in_progress = False\n"
+)
+if old_finish_prefix in data:
+    data = replace_one(data, old_finish_prefix, new_finish_prefix, "enforce the 4-second pause after Back before tablet refresh")
+    write(p, data)
+elif "resuming_after_purchase = bool(self._resume_after_purchase_navigation and not completed_auto_refresh)" in data:
+    print("ALREADY SET post-purchase delay gate")
+else:
+    raise RuntimeError("Could not safely place post-purchase refresh gate before normal scan resume")
+
+# Version metadata and UI title indicate the new timing/navigation behavior.
+p, data = read(main)
+data = replace_one(
+    data,
+    "self.setWindowTitle('NG Market Scanner v1.2.83 — PHONE RECOVERY + CHANGED-CARD OCR / Full HD / 2K')",
+    "self.setWindowTitle('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE PAUSES + TABLET REFRESH / Full HD / 2K')",
+    "set v1.2.84 application title"
+)
+data = replace_one(
+    data,
+    "self.logline('NG Market Scanner v1.2.83 — PHONE RECOVERY + CHANGED-CARD OCR. Кеш та ланцюжок покупки CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінені. У звичайному режимі змінені поля карток проходять повторний OCR для не-GREEN бейджа; швидка смуга автокупівлі лишається green-only. Автооновлення розпізнає рамку телефона, натискає ESC лише після розпізнавання та продовжує планшет → Маркет → Транспорт. Профіль UI Full HD/2K; зупинка Ctrl+Alt+F8.')",
+    "self.logline('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE + TABLET REFRESH. Після третього кліку пауза 4 с; «Скасувати» лише якщо модальне вікно присутнє; ще 4 с до «Назад»; після повернення каталогу ще 4 с від останньої дії, примусове оновлення через планшет → Маркет → Транспорт і лише потім відновлення сканування. OCR і швидкий ланцюжок CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінені. Телефон закривається через ESC лише після розпізнавання. Full HD/2K; зупинка Ctrl+Alt+F8.')",
+    "update startup log for v1.2.84"
+)
+write(p, data)
+
+# Mark package version.
+version_path = root / "VERSION"
+if version_path.is_file():
+    write(version_path, "1.2.84\n")
+release_version = root / "docs" / "release" / "VERSION.txt"
+if release_version.is_file():
+    write(release_version, "NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE PAUSES + TABLET REFRESH\n")
+
+# Update the official Windows builder's expected UI title and failure message.
+p, build_data = read("build_single_exe_internal.bat")
+build_data = replace_one(
+    build_data,
+    'findstr /C:"NG Market Scanner v1.2.83" main.py >nul',
+    'findstr /C:"NG Market Scanner v1.2.84" main.py >nul',
+    "accept v1.2.84 source title in official EXE builder"
+)
+build_data = replace_one(
+    build_data,
+    "echo [ERROR] Main source is not the v1.2.83 phone-recovery and changed-card OCR release.",
+    "echo [ERROR] Main source is not the v1.2.84 four-second post-purchase and tablet-refresh release.",
+    "update official builder release-guard diagnostic"
+)
+write(p, build_data)
+
+# Keep the test suite aligned with the new title and assert the complete requested sequence.
+p, testdata = read("tests/test_v1259_parallel_detail_fastpath.py")
+testdata = replace_one(
+    testdata,
+    "setWindowTitle('NG Market Scanner v1.2.83 — PHONE RECOVERY",
+    "setWindowTitle('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE",
+    "update expected application title in release-contract test"
+)
+write(p, testdata)
+
+test_path = root / "tests" / "test_v1284_post_purchase_4s_tablet_refresh.py"
+if not test_path.exists():
+    write(test_path, r'''import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+class PostPurchaseFourSecondTabletRefreshTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.main = (ROOT / "main.py").read_text(encoding="utf-8")
+        cls.actions = (ROOT / "scanner_actions.py").read_text(encoding="utf-8")
+        cls.core = (ROOT / "scanner_core.py").read_text(encoding="utf-8")
+
+    def test_post_purchase_cancel_and_back_guards_are_four_seconds(self):
+        for marker in (
+            "POST_PURCHASE_CONFIRM_GRACE_SECONDS = 4.00",
+            "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS = 4.00",
+            "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS = 4.00",
+            "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00",
+            "POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00",
+            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00",
+            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS = 4.00",
+        ):
+            self.assertIn(marker, self.main, marker)
+        self.assertIn("cancel_cooldown_done = not last_attempt or (now - last_attempt) >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", self.main)
+
+    def test_purchase_and_back_action_timestamps_drive_inter_action_pause(self):
+        self.assertIn("self._resume_purchase_action_completed_at = time.monotonic()", self.main)
+        self.assertIn("self._resume_market_back_attempted_at = time.monotonic()", self.main)
+        self.assertIn("remaining_pause = latest_action_at + POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS - time.monotonic()", self.main)
+        self.assertIn("QTimer.singleShot(max(1, int(remaining_pause * 1000)), self._post_purchase_refresh_delay_elapsed)", self.main)
+
+    def test_returned_catalog_triggers_tablet_refresh_before_ocr_resumes(self):
+        finish = self.main[self.main.index("def _finish_continuous_resume_after_market_confirmed(self):"):]
+        forced = self.main[self.main.index("def _start_post_purchase_tablet_refresh(self):"):self.main.index("def _finish_continuous_resume_after_market_confirmed(self):")]
+        self.assertIn("self._start_post_purchase_tablet_refresh()", finish)
+        self.assertLess(finish.index("self._start_post_purchase_tablet_refresh()"), finish.index("self.scan_once(hide_window=None)"))
+        self.assertIn("self._auto_refresh_open_tablet", forced)
+        self.assertIn("self._auto_refresh_begin_market_gate", self.main)
+        self.assertIn("self._auto_refresh_run_step(", forced)
+        self.assertIn("CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM", self.main)
+
+    def test_fast_purchase_coordinates_and_green_fast_lane_are_unchanged(self):
+        self.assertIn("DETAIL_BUY = (1484, 1005)", self.actions)
+        self.assertIn("FINAL_CONFIRM = (850, 716)", self.actions)
+        self.assertIn("BACK_MARKET = (320, 42)", self.actions)
+        self.assertIn("cache_valid and not self.fast_candidate_mode", self.core)
+        self.assertIn("fast_candidate_mode=bool(self.settings.get('auto_click', False))", self.main)
+
+    def test_phone_recovery_remains_present(self):
+        self.assertIn("def _auto_refresh_guard_phone(self, sequence_id, continuation, stage_label):", self.main)
+        self.assertIn("phone_popup_detection_patch_version", self.core)
+        self.assertIn("NG Market Scanner v1.2.84", self.main)
+
+if __name__ == "__main__":
+    unittest.main()
+''', encoding="utf-8", newline="\n")
+    print("ADDED tests/test_v1284_post_purchase_4s_tablet_refresh.py")
+else:
+    print("ALREADY SET tests/test_v1284_post_purchase_4s_tablet_refresh.py")
+
+print("PATCH V1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH COMPLETE")
+# === END v1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH ===
+
 # === END v1.2.83 PHONE + CHANGED-CARD OCR PATCH ===
