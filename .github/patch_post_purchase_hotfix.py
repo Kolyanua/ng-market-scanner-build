@@ -1919,7 +1919,7 @@ class PostPurchaseFourSecondTabletRefreshTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-''', encoding="utf-8", newline="\n")
+''')
     print("ADDED tests/test_v1284_post_purchase_4s_tablet_refresh.py")
 else:
     print("ALREADY SET tests/test_v1284_post_purchase_4s_tablet_refresh.py")
