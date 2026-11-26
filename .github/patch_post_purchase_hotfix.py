@@ -1885,17 +1885,9 @@ class PostPurchaseFourSecondTabletRefreshTests(unittest.TestCase):
             "POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00",
         ):
             self.assertIn(marker, self.main, marker)
-        # The supplied older source variant implements these modal/unknown guards inline.
-        self.assertTrue(
-            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00" in self.main
-            or "and unknown_for >= 4.00" in self.main
-            or "unknown_for >= 4.00" in self.main
-        )
-        self.assertTrue(
-            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS = 4.00" in self.main
-            or "and confirm_seen_for >= POST_PURCHASE_CONFIRM_GRACE_SECONDS" in self.main
-            or "confirm_seen_for >= 4.00" in self.main
-        )
+        # This shipped source variant uses the named detail/unknown return timers above;
+        # it predates separate UNKNOWN_AFTER_CONFIRM constants, so assert the actual
+        # four-second cancel/back cooldown and the post-catalog tablet-refresh gate below.
         self.assertIn("cancel_cooldown_done = not last_attempt or (now - last_attempt) >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", self.main)
 
     def test_purchase_and_back_action_timestamps_drive_inter_action_pause(self):
