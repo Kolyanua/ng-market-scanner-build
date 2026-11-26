@@ -1687,22 +1687,24 @@ data = replace_one(
     "            self._resume_purchase_action_completed_at = time.monotonic()\n",
     "record the end of the three-click purchase chain"
 )
-data = replace_all_exact(
-    data,
-    "                        self._resume_market_back_attempted = True\n",
-    "                        self._resume_market_back_attempted = True\n"
-    "                        self._resume_market_back_attempted_at = time.monotonic()\n",
-    1,
-    "timestamp purchase-recovery Back click"
-)
-data = replace_all_exact(
-    data,
-    "            self._resume_market_back_attempted = True\n",
-    "            self._resume_market_back_attempted = True\n"
-    "            self._resume_market_back_attempted_at = time.monotonic()\n",
-    1,
-    "timestamp auto-refresh recovery Back click"
-)
+# Stamp each Back action by exact source line (avoid substring/indent overlap).
+lines = data.splitlines(keepends=True)
+updated_lines = []
+back_true_count = 0
+back_stamp_count = 0
+for i, line in enumerate(lines):
+    updated_lines.append(line)
+    if re.match(r"^[ \t]*self\._resume_market_back_attempted = True[ \t]*\r?\n?$", line):
+        back_true_count += 1
+        indent = re.match(r"^([ \t]*)", line).group(1)
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        if not re.match(r"^[ \t]*self\._resume_market_back_attempted_at = time\.monotonic\(\)", next_line):
+            updated_lines.append(f"{indent}self._resume_market_back_attempted_at = time.monotonic()\n")
+            back_stamp_count += 1
+if back_true_count != 2:
+    raise RuntimeError(f"Expected two Back-action sites for timestamps; found {back_true_count}")
+data = "".join(updated_lines)
+print(f"Stamped purchase/refresh Back action sites ({back_stamp_count} insertions)")
 write(p, data)
 
 # Start a forced tablet refresh after the catalog is back and 4 seconds have elapsed
