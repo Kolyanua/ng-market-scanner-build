@@ -1005,7 +1005,7 @@ def patch_name_confidence_and_current_2k_coordinates():
         "FINAL_CONFIRM reference point to current screenshot calibration"
     )
     action_data = replace_one(
-        action_data, "BACK_MARKET = (320, 42)", "BACK_MARKET = (258, 34)",
+        action_data, "BACK_MARKET = (258, 34)", "BACK_MARKET = (320, 42)",
         "BACK_MARKET reference point to current screenshot calibration"
     )
     if "DETAIL_BUY = (1484, 1005)" not in action_data:
@@ -1100,9 +1100,20 @@ class NameConfidenceAndCurrent2KCalibrationTests(unittest.TestCase):
         tests = (ROOT / "tests" / "test_scanner_actions.py").read_text(encoding="utf-8")
         self.assertIn("DETAIL_BUY = (1484, 1005)", actions)
         self.assertIn("FINAL_CONFIRM = (850, 716)", actions)
-        self.assertIn("BACK_MARKET = (258, 34)", actions)
+        self.assertIn("BACK_MARKET = (320, 42)", actions)
         self.assertIn("(1133, 955)", tests)
         self.assertIn("(1979, 1340)", tests)
+
+    def test_back_to_market_coordinate_is_scaled_once_from_1920x1080_reference(self):
+        sys_path = str(ROOT)
+        import sys
+        if sys_path not in sys.path:
+            sys.path.insert(0, sys_path)
+        from scanner_actions import BACK_MARKET, scale_reference_point
+        self.assertEqual(BACK_MARKET, (320, 42))
+        self.assertEqual(scale_reference_point(BACK_MARKET, (2560, 1440)), (427, 56))
+        # The uploaded screenshot is a resized view of the 16:9 game surface.
+        self.assertEqual(scale_reference_point(BACK_MARKET, (1651, 927)), (275, 36))
 
 if __name__ == "__main__":
     unittest.main()
@@ -1577,7 +1588,7 @@ class PhonePopupAndChangedCardOCRV1283Tests(unittest.TestCase):
         self.assertIn("fast_candidate_mode=bool(self.settings.get('auto_click', False))", self.main)
         self.assertIn('DETAIL_BUY = (1484, 1005)', self.actions)
         self.assertIn('FINAL_CONFIRM = (850, 716)', self.actions)
-        self.assertIn('BACK_MARKET = (258, 34)', self.actions)
+        self.assertIn('BACK_MARKET = (320, 42)', self.actions)
 
     def test_windows_builders_require_new_feature_markers(self):
         for token in ('1.2.83-phone-popup-rail-detector', '1.2.83-changed-non-green-field-ocr'):
