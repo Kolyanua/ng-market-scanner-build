@@ -1591,6 +1591,23 @@ if __name__ == '__main__':
 else:
     print("ALREADY SET test_v1283_phone_popup_changed_ocr.py")
 
+# The project build script checks the UI version string before tests/package.
+# This source has now been patched to v1.2.83, so update that guard as well.
+p, build_data = read("build_single_exe_internal.bat")
+build_data = replace_one(
+    build_data,
+    'findstr /C:"NG Market Scanner v1.2.81" main.py >nul',
+    'findstr /C:"NG Market Scanner v1.2.83" main.py >nul',
+    "accept v1.2.83 source title in official EXE builder"
+)
+build_data = replace_one(
+    build_data,
+    "echo [ERROR] Main source is not the v1.2.81 post-purchase navigation and continuous-scan release.",
+    "echo [ERROR] Main source is not the v1.2.83 phone-recovery and changed-card OCR release.",
+    "update official builder release-guard diagnostic"
+)
+write(p, build_data)
+
 print("PATCH V1.2.83 PHONE RECOVERY + CHANGED-CARD OCR COMPLETE")
 
 # === END v1.2.83 PHONE + CHANGED-CARD OCR PATCH ===
