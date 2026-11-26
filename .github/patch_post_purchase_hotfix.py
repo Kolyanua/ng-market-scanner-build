@@ -131,7 +131,7 @@ for name in (
     "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS",
     "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS",
 ):
-    set_numeric(main, name, 3.0)
+    set_numeric(main, name, 4.0)
 p, data = read(main)
 
 # The uploaded archive can contain either the newer "unknown" guard or the older "nonmodal" guard.
@@ -140,41 +140,41 @@ nonmodal_variant = ("POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS" in data
                     or "_resume_market_nonmodal_after_confirm_last_frame_token" in data)
 if nonmodal_variant:
     set_numeric(main, "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_FRESH_FRAMES", 3, optional=True)
-    nonmodal_seconds_set = set_numeric(main, "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS", 3.0, optional=True)
+    nonmodal_seconds_set = set_numeric(main, "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS", 4.0, optional=True)
     p, data = read(main)
     if not nonmodal_seconds_set:
-        data, ok = replace_guard_literal(data, "nonmodal_for", "3.00")
+        data, ok = replace_guard_literal(data, "nonmodal_for", "4.00")
         if not ok:
             raise RuntimeError("Could not set nonmodal elapsed-time guard to 3 seconds")
         write(p, data)
     if "and confirm_seen_for >= POST_PURCHASE_CONFIRM_GRACE_SECONDS" not in data:
-        data, ok = replace_guard_literal(data, "confirm_seen_for", "3.00")
+        data, ok = replace_guard_literal(data, "confirm_seen_for", "4.00")
         if not ok:
             raise RuntimeError("Could not verify/set modal-seen grace in nonmodal variant")
         write(p, data)
     guard_marker = "nonmodal"
 else:
     set_numeric(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_FRESH_FRAMES", 3, optional=True)
-    min_named = set_numeric(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS", 3.0, optional=True)
-    back_named = set_numeric(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS", 3.0, optional=True)
+    min_named = set_numeric(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS", 4.0, optional=True)
+    back_named = set_numeric(main, "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS", 4.0, optional=True)
     p, data = read(main)
     if not min_named:
-        data, ok = replace_guard_literal(data, "unknown_for", "3.00")
+        data, ok = replace_guard_literal(data, "unknown_for", "4.00")
         if not ok:
             print("WARNING: this older source variant has no recognized unknown-state elapsed-time guard; leaving its existing navigation guard unchanged")
     if not back_named:
         if re.search(r"(?m)^\s*and\s+confirm_seen_for\s*>=\s*POST_PURCHASE_CONFIRM_GRACE_SECONDS\s*$", data):
             print("Modal-seen grace uses POST_PURCHASE_CONFIRM_GRACE_SECONDS=3")
         else:
-            data, ok = replace_guard_literal(data, "confirm_seen_for", "3.00")
+            data, ok = replace_guard_literal(data, "confirm_seen_for", "4.00")
             if not ok:
                 print("WARNING: this older source variant has no recognized modal-seen elapsed-time guard; leaving its existing navigation guard unchanged")
     write(p, data)
     guard_marker = ("unknown_legacy" if (
-        "unknown_for >= 3.00" not in data
-        and "unknown_for >= 3.0" not in data
-        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00" not in data
-        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.0" not in data
+        "unknown_for >= 4.00" not in data
+        and "unknown_for >= 4.0" not in data
+        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00" not in data
+        and "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.0" not in data
     ) else "unknown")
 
 # A missing capture timestamp is not fresh evidence. Fix any unsafe resume frame-token gates.
@@ -190,27 +190,27 @@ p, data = read(main)
 if re.search(r"(?m)^.*token is None\s+or\s+token\s*!=\s*self\._resume_market_.*_last_frame_token.*$", data):
     raise RuntimeError("A stale-token freshness expression remains in post-purchase recovery")
 
-# Add a shared 3-second post-cancel cooldown.
+# Add a shared 4-second post-cancel cooldown.
 p, data = read(main)
-if "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00" not in data:
-    if not set_numeric(main, "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", 3.0,
+if "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00" not in data:
+    if not set_numeric(main, "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", 4.0,
                        anchor="POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS", optional=True):
         p, data = read(main)
-        anchor_re = re.compile(r"(?m)^([ \t]*)POST_PURCHASE_CONFIRM_GRACE_SECONDS\s*=\s*3\.00$")
+        anchor_re = re.compile(r"(?m)^([ \t]*)POST_PURCHASE_CONFIRM_GRACE_SECONDS\s*=\s*4\.00$")
         ms = list(anchor_re.finditer(data))
         if len(ms) != 1:
             raise RuntimeError("Cannot safely add post-cancel cooldown constant")
         m = ms[0]
-        write(p, data[:m.end()] + f"\n{m.group(1)}POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 3.00" + data[m.end():])
+        write(p, data[:m.end()] + f"\n{m.group(1)}POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00" + data[m.end():])
         print("INSERTED post-cancel cooldown after confirm grace")
 else:
     print("ALREADY SET POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS=3")
 
 # Older archive variants reuse these named timers for retry and return-to-market grace.
-set_numeric(main, "POST_PURCHASE_CANCEL_RETRY_SECONDS", 3.0, optional=True)
-set_numeric(main, "POST_PURCHASE_CANCEL_BACK_GRACE_SECONDS", 3.0, optional=True)
+set_numeric(main, "POST_PURCHASE_CANCEL_RETRY_SECONDS", 4.0, optional=True)
+set_numeric(main, "POST_PURCHASE_CANCEL_BACK_GRACE_SECONDS", 4.0, optional=True)
 
-# Retry Cancel and Back are gated by the 3-second post-cancel timer.
+# Retry Cancel and Back are gated by the 4-second post-cancel timer.
 p, data = read(main)
 retry_pattern = re.compile(
     r"(?ms)^([ \t]*retry_due\s*=\s*\(self\._resume_market_cancel_attempts\s*==\s*0\s+or\s+\(self\._resume_market_cancel_attempts\s*<\s*2\s+and\s+now\s*-\s*last_attempt\s*>=\s*)[0-9]+(?:\.[0-9]+)?(\)\))$"
@@ -220,7 +220,7 @@ if len(ms) == 1:
     m = ms[0]
     data = data[:m.start()] + m.group(1) + "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" + m.group(2) + data[m.end():]
     write(p, data)
-    print("SET retry_due 3-second cooldown")
+    print("SET retry_due 4-second cooldown")
 elif len(ms) == 0 and "retry_due" in data and ("POST_PURCHASE_CANCEL_RETRY_SECONDS" in data or "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" in data):
     print("ALREADY SAFE: retry_due uses a named 3-second cancel cooldown")
 elif len(ms) == 0 and "retry_due" in data and "now-last_attempt >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS" not in data:
@@ -251,13 +251,13 @@ write(p, data)
 # Update regression-test timer expectations if this source version includes those tests.
 for rel, replacements in {
     "tests/test_v1281_post_purchase_navigation.py": {
-        "POST_PURCHASE_CONFIRM_GRACE_SECONDS": 3.0,
-        "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS": 3.0,
-        "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS": 3.0,
+        "POST_PURCHASE_CONFIRM_GRACE_SECONDS": 4.0,
+        "POST_PURCHASE_DETAIL_BACK_MIN_WAIT_SECONDS": 4.0,
+        "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS": 4.0,
     },
     "tests/test_v1282_post_purchase_unknown_guard.py": {
-        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS": 3.0,
-        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS": 3.0,
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS": 4.0,
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS": 4.0,
     },
 }.items():
     p, testdata = read(rel, required=False)
@@ -279,7 +279,7 @@ rel = "docs/release/POST_PURCHASE_NAVIGATION_v1.2.81_UA.txt"
 p, doc = read(rel, required=False)
 if p is not None:
     doc, _ = re.subn(r"модальне вікно має залишатися видимим щонайменше [0-9,.]+ с",
-                     "модальне вікно має залишатися видимим щонайменше 3 с", doc, count=1)
+                     "модальне вікно має залишатися видимим щонайменше 4 с", doc, count=1)
     write(p, doc)
 
 # Normalize the regression-test error branch to a dedicated, unique label.
@@ -396,24 +396,24 @@ for name in (
     "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS",
     "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS",
 ):
-    if not any(f"{name} = {value}" in data for value in ("3.00", "3.0", "3")):
-        raise RuntimeError(f"Final validation failed: {name} is not set to 3 seconds")
+    if not any(f"{name} = {value}" in data for value in ("4.00", "4.0", "4")):
+        raise RuntimeError(f"Final validation failed: {name} is not set to 4 seconds")
 if guard_marker == "nonmodal":
     if not any(s in data for s in (
-        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 3.00",
-        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 3.0",
-        "and nonmodal_for >= 3.00",
-        "and nonmodal_for >= 3.0",
+        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 4.00",
+        "POST_PURCHASE_NONMODAL_AFTER_CONFIRM_MIN_SECONDS = 4.0",
+        "and nonmodal_for >= 4.00",
+        "and nonmodal_for >= 4.0",
     )):
-        raise RuntimeError("Final validation failed: nonmodal 3-second guard missing")
+        raise RuntimeError("Final validation failed: nonmodal 4-second guard missing")
 elif guard_marker == "unknown":
     if not any(s in data for s in (
-        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.00",
-        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 3.0",
-        "and unknown_for >= 3.00",
-        "and unknown_for >= 3.0",
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00",
+        "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.0",
+        "and unknown_for >= 4.00",
+        "and unknown_for >= 4.0",
     )):
-        raise RuntimeError("Final validation failed: unknown 3-second guard missing")
+        raise RuntimeError("Final validation failed: unknown 4-second guard missing")
 else:
     print("WARNING: legacy source has no compatible unknown-state guard; preserving its original post-purchase navigation logic.")
 print("Post-purchase recovery validation completed for", guard_marker, "source variant.")
