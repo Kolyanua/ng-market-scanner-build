@@ -1111,3 +1111,486 @@ if __name__ == "__main__":
 
 patch_name_confidence_and_current_2k_coordinates()
 
+
+
+# === BEGIN v1.2.83 PHONE + CHANGED-CARD OCR PATCH ===
+#!/usr/bin/env python3
+"""Apply the v1.2.83 phone-popup recovery and changed-card OCR patch."""
+from pathlib import Path
+import re
+import sys
+
+if len(sys.argv) != 2:
+    raise SystemExit("usage: patch_v1283_phone_ocr.py SOURCE_ROOT")
+root = Path(sys.argv[1]).resolve()
+
+
+def read(rel):
+    path = root / rel
+    if not path.is_file():
+        raise RuntimeError(f"Required file missing: {rel}")
+    return path, path.read_text(encoding="utf-8")
+
+
+def write(path, data):
+    path.write_text(data, encoding="utf-8", newline="\n")
+
+
+def replace_one(data, before, after, label):
+    count = data.count(before)
+    if count == 0:
+        if after in data:
+            print(f"ALREADY SET {label}")
+            return data
+        raise RuntimeError(f"Could not find unique source anchor for {label}")
+    if count != 1:
+        raise RuntimeError(f"Refusing ambiguous patch for {label}: {count} matches")
+    print(f"PATCHED {label}")
+    return data.replace(before, after, 1)
+
+
+def replace_all_exact(data, before, after, expected, label):
+    count = data.count(before)
+    if count == 0 and after in data:
+        print(f"ALREADY SET {label}")
+        return data
+    if count != expected:
+        raise RuntimeError(f"Expected {expected} anchors for {label}; found {count}")
+    print(f"PATCHED {label} ({count} occurrences)")
+    return data.replace(before, after)
+
+
+PHONE_DETECTOR = r'''def _detect_phone_popup_in_frame(frame, screen_size, frame_origin=(0, 0)):
+    """Recognize the right-side phone overlay by its bezel, without OCR."""
+    empty = {
+        'detected': False, 'score': 0.0, 'left_rail_coverage': 0.0,
+        'right_rail_coverage': 0.0, 'vertical_overlap': 0.0,
+        'top_edge_coverage': 0.0, 'bounds_norm': None,
+    }
+    try:
+        import numpy as np
+        arr = np.asarray(frame)
+        if arr.ndim != 3 or arr.shape[2] < 3 or arr.size == 0:
+            return empty
+        screen_w, screen_h = int(screen_size[0]), int(screen_size[1])
+        if screen_w < 320 or screen_h < 240:
+            return empty
+        origin_x, origin_y = int(frame_origin[0] or 0), int(frame_origin[1] or 0)
+        frame_h, frame_w = arr.shape[:2]
+
+        def local_box(x0, y0, x1, y1):
+            xa = max(0, min(frame_w, int(round(x0 * screen_w)) - origin_x))
+            xb = max(0, min(frame_w, int(round(x1 * screen_w)) - origin_x))
+            ya = max(0, min(frame_h, int(round(y0 * screen_h)) - origin_y))
+            yb = max(0, min(frame_h, int(round(y1 * screen_h)) - origin_y))
+            return xa, ya, xb, yb
+
+        # Accept BGR and RGB channel ordering; capture APIs differ by backend.
+        c0 = arr[:, :, 0].astype(np.int16, copy=False)
+        green = arr[:, :, 1].astype(np.int16, copy=False)
+        c2 = arr[:, :, 2].astype(np.int16, copy=False)
+        mask_bgr = ((c0 > 120) & (c2 > 110) & (c0 > c2 + 4)
+                    & (green > 90) & (np.abs(c2 - green) < 45))
+        mask_rgb = ((c2 > 120) & (c0 > 110) & (c2 > c0 + 4)
+                    & (green > 90) & (np.abs(c0 - green) < 45))
+        mask = mask_bgr | mask_rgb
+
+        y0, y1 = local_box(0.0, 0.515, 1.0, 0.935)[1::2]
+        if y1 - y0 < max(70, int(screen_h * 0.20)):
+            return empty
+
+        def strongest_rail(x_start, x_end):
+            xa, _, xb, _ = local_box(x_start, 0.0, x_end, 1.0)
+            if xb - xa < 2:
+                return None, 0.0
+            coverage = mask[y0:y1, xa:xb].mean(axis=0)
+            rel_x = int(np.argmax(coverage))
+            return xa + rel_x, float(coverage[rel_x])
+
+        left_x, left_cov = strongest_rail(0.80, 0.93)
+        right_x, right_cov = strongest_rail(0.955, 0.9995)
+        if left_x is None or right_x is None:
+            return empty
+        left_screen_x = (left_x + origin_x) / float(screen_w)
+        right_screen_x = (right_x + origin_x) / float(screen_w)
+        gap = right_screen_x - left_screen_x
+        if gap < 0.055 or gap > 0.22:
+            return empty
+
+        radius = max(2, int(round(screen_w * 0.002)))
+        left_band = mask[y0:y1, max(0, left_x-radius):min(frame_w, left_x+radius+1)].any(axis=1)
+        right_band = mask[y0:y1, max(0, right_x-radius):min(frame_w, right_x+radius+1)].any(axis=1)
+        vertical_overlap = float(np.mean(left_band & right_band)) if left_band.size else 0.0
+
+        tx0, ty0, tx1, ty1 = local_box(0.0, 0.465, 1.0, 0.555)
+        inset = max(3, int(round(screen_w * 0.006)))
+        hx0 = max(tx0, left_x + inset)
+        hx1 = min(tx1, right_x - inset)
+        if hx1 - hx0 < 20 or ty1 - ty0 < 2:
+            top_coverage = 0.0
+        else:
+            row_coverage = mask[ty0:ty1, hx0:hx1].mean(axis=1)
+            top_coverage = float(row_coverage.max()) if row_coverage.size else 0.0
+
+        detected = bool(left_cov >= 0.38 and right_cov >= 0.38
+                        and vertical_overlap >= 0.30 and top_coverage >= 0.18)
+        score = min(1.0, 0.30 * min(left_cov, 1.0) + 0.30 * min(right_cov, 1.0)
+                    + 0.25 * min(vertical_overlap / 0.65, 1.0)
+                    + 0.15 * min(top_coverage / 0.65, 1.0))
+        if not detected:
+            return {
+                'detected': False, 'score': round(score, 3),
+                'left_rail_coverage': round(left_cov, 3),
+                'right_rail_coverage': round(right_cov, 3),
+                'vertical_overlap': round(vertical_overlap, 3),
+                'top_edge_coverage': round(top_coverage, 3), 'bounds_norm': None,
+            }
+        top_y_values = np.where(mask[ty0:ty1, hx0:hx1].any(axis=1))[0]
+        top_y = ((ty0 + int(top_y_values[0]) + origin_y) / float(screen_h)
+                 if top_y_values.size else 0.50)
+        return {
+            'detected': True, 'score': round(score, 3),
+            'left_rail_coverage': round(left_cov, 3),
+            'right_rail_coverage': round(right_cov, 3),
+            'vertical_overlap': round(vertical_overlap, 3),
+            'top_edge_coverage': round(top_coverage, 3),
+            'bounds_norm': [round(left_screen_x, 4), round(top_y, 4), round(right_screen_x, 4), 1.0],
+        }
+    except Exception:
+        return empty
+
+
+'''
+
+# --- scanner_core.py: phone detector + selective OCR for changed non-GREEN fields ---
+p, core = read("scanner_core.py")
+core = replace_one(
+    core,
+    'CAPTURE_COMPAT_PATCH_VERSION = "1.2.82-laptop-dxcam-output-retry"\n',
+    'CAPTURE_COMPAT_PATCH_VERSION = "1.2.82-laptop-dxcam-output-retry"\n'
+    'PHONE_POPUP_DETECTION_PATCH_VERSION = "1.2.83-phone-popup-rail-detector"\n'
+    'CHANGED_NON_GREEN_OCR_PATCH_VERSION = "1.2.83-changed-non-green-field-ocr"\n',
+    "add v1.2.83 feature markers"
+)
+if "def _detect_phone_popup_in_frame(frame, screen_size, frame_origin=(0, 0)):" not in core:
+    core = replace_one(core, "def probe_market_return_state(grid, target_hwnd=None):\n", PHONE_DETECTOR + "def probe_market_return_state(grid, target_hwnd=None):\n", "add OCR-free phone overlay detector")
+else:
+    print("ALREADY SET phone overlay detector")
+if "phone_evidence = _detect_phone_popup_in_frame" not in core:
+    core = replace_one(
+        core,
+        "        result['capture_backend'] = str(backend or 'unknown')\n",
+        "        result['capture_backend'] = str(backend or 'unknown')\n"
+        "        phone_evidence = _detect_phone_popup_in_frame(frame, actual_size, frame_origin=capture_origin)\n"
+        "        result['phone_popup'] = phone_evidence\n"
+        "        if phone_evidence.get('detected'):\n"
+        "            result.update({'state': 'phone',\n"
+        "                           'reason': f\"phone overlay bezel recognized (score={phone_evidence.get('score', 0.0):.2f})\"})\n"
+        "            return result\n",
+        "recognize phone before modal/detail actions"
+    )
+else:
+    print("ALREADY SET phone overlay state probe")
+core = replace_one(
+    core,
+    "    States: market (two-frame stability is checked by main.py), detail, confirm,\n    not_foreground, unknown. For a visible confirm modal it also returns dynamic\n",
+    "    States: market (two-frame stability is checked by main.py), detail, confirm, phone,\n    not_foreground, unknown. For a visible confirm modal it also returns dynamic\n",
+    "document phone state"
+)
+old_gate = (
+"                if (self.fast_color_filter_enabled\n"
+"                        and str(ctx.get('badge_color', 'UNKNOWN')).upper() != 'GREEN'):\n"
+"                    had_field_changes = bool(fields_to_ocr)\n"
+"                    fields_to_ocr = []\n"
+"                    ctx['_fast_color_skipped'] = True\n"
+"                    ctx['_fields_to_ocr'] = []\n"
+"                    if had_field_changes or not isinstance(prior_row, dict):\n"
+"                        fast_skipped_indices.append(idx)\n"
+"                    continue\n"
+)
+new_gate = (
+"                if (self.fast_color_filter_enabled\n"
+"                        and str(ctx.get('badge_color', 'UNKNOWN')).upper() != 'GREEN'):\n"
+"                    had_field_changes = bool(fields_to_ocr)\n"
+"                    # Auto-buy stays OCR-free for non-GREEN cards. In normal scanning,\n"
+"                    # re-read only changed fields so cache placeholders cannot stay stale.\n"
+"                    recheck_changed_non_green = bool(\n"
+"                        cache_valid and not self.fast_candidate_mode\n"
+"                        and (had_field_changes or not isinstance(prior_row, dict))\n"
+"                    )\n"
+"                    if recheck_changed_non_green and fields_to_ocr:\n"
+"                        changed_indices.append(idx)\n"
+"                        changed_field_map[str(idx + 1)] = list(fields_to_ocr)\n"
+"                        ctx['_fields_to_ocr'] = list(fields_to_ocr)\n"
+"                        ctx['_non_green_changed_ocr'] = True\n"
+"                        with _CARD_CACHE_LOCK:\n"
+"                            for field in fields_to_ocr:\n"
+"                                retry_identity = self._field_retry_identity(current_fields.get(field))\n"
+"                                _CARD_CACHE_FIELD_LAST_OCR_AT[(config_key, screen_key, retry_identity, field)] = retry_now\n"
+"                        continue\n"
+"                    fields_to_ocr = []\n"
+"                    ctx['_fast_color_skipped'] = True\n"
+"                    ctx['_fields_to_ocr'] = []\n"
+"                    if had_field_changes or not isinstance(prior_row, dict):\n"
+"                        fast_skipped_indices.append(idx)\n"
+"                    continue\n"
+)
+core = replace_one(core, old_gate, new_gate, "selective OCR for changed non-GREEN card fields")
+core = replace_one(
+    core,
+    "                'fast_color_skipped_card_numbers': [int(i) + 1 for i in fast_skipped_indices],\n",
+    "                'fast_color_skipped_card_numbers': [int(i) + 1 for i in fast_skipped_indices],\n"
+    "                'non_green_changed_ocr_card_numbers': [\n"
+    "                    int(i) + 1 for i, ctx in enumerate(contexts) if ctx.get('_non_green_changed_ocr')\n"
+    "                ],\n"
+    "                'changed_non_green_ocr_patch_version': CHANGED_NON_GREEN_OCR_PATCH_VERSION,\n"
+    "                'phone_popup_detection_patch_version': PHONE_POPUP_DETECTION_PATCH_VERSION,\n",
+    "add diagnostics for v1.2.83 features"
+)
+write(p, core)
+
+# --- main.py: require new core markers, recover from phone popup, display v1.2.83 ---
+p, main = read("main.py")
+main = replace_one(
+    main,
+    'EXPECTED_MARKET_RETURN_GATE_PATCH_VERSION = "1.2.75-market-return-state-gate"\n',
+    'EXPECTED_MARKET_RETURN_GATE_PATCH_VERSION = "1.2.75-market-return-state-gate"\n'
+    'EXPECTED_PHONE_POPUP_DETECTION_PATCH_VERSION = "1.2.83-phone-popup-rail-detector"\n'
+    'EXPECTED_CHANGED_NON_GREEN_OCR_PATCH_VERSION = "1.2.83-changed-non-green-field-ocr"\n',
+    "add expected v1.2.83 feature markers"
+)
+main = replace_one(
+    main,
+    "self.setWindowTitle('NG Market Scanner v1.2.81 — POST-PURCHASE NAVIGATION + CONTINUOUS BUY / Full HD / 2K')",
+    "self.setWindowTitle('NG Market Scanner v1.2.83 — PHONE RECOVERY + CHANGED-CARD OCR / Full HD / 2K')",
+    "set v1.2.83 window title"
+)
+if "_auto_refresh_phone_recovery_attempts = 0\n        self._purchase_was_continuous_scan = False" not in main:
+    main = replace_one(
+        main,
+        "        self._auto_refresh_wait_reason = ''\n        self._purchase_was_continuous_scan = False\n",
+        "        self._auto_refresh_wait_reason = ''\n        self._auto_refresh_phone_recovery_attempts = 0\n        self._purchase_was_continuous_scan = False\n",
+        "initialize phone recovery counter"
+    )
+else:
+    print("ALREADY SET phone recovery counter")
+old_log_line = next((line for line in main.splitlines() if "self.logline('NG Market Scanner v1.2.81 — POST-PURCHASE NAVIGATION FIX." in line), None)
+new_log_line = "        self.logline('NG Market Scanner v1.2.83 — PHONE RECOVERY + CHANGED-CARD OCR. Кеш та ланцюжок покупки CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінені. У звичайному режимі змінені поля карток проходять повторний OCR для не-GREEN бейджа; швидка смуга автокупівлі лишається green-only. Автооновлення розпізнає рамку телефона, натискає ESC лише після розпізнавання та продовжує планшет → Маркет → Транспорт. Профіль UI Full HD/2K; зупинка Ctrl+Alt+F8.')"
+if old_log_line:
+    main = main.replace(old_log_line, new_log_line, 1)
+elif new_log_line in main:
+    print("ALREADY SET startup log line")
+else:
+    raise RuntimeError("Could not locate startup log line for v1.2.83")
+
+old_decl = "            market_return_gate_version = str(getattr(core, 'MARKET_RETURN_GATE_PATCH_VERSION', 'unknown'))\n"
+new_decl = old_decl + "            phone_popup_version = str(getattr(core, 'PHONE_POPUP_DETECTION_PATCH_VERSION', 'unknown'))\n            changed_non_green_ocr_version = str(getattr(core, 'CHANGED_NON_GREEN_OCR_PATCH_VERSION', 'unknown'))\n"
+main = replace_all_exact(main, old_decl, new_decl, 2, "read feature markers in both OCR compatibility gates")
+old_condition = "                    or market_return_gate_version != EXPECTED_MARKET_RETURN_GATE_PATCH_VERSION):"
+new_condition = ("                    or market_return_gate_version != EXPECTED_MARKET_RETURN_GATE_PATCH_VERSION\n"
+                 "                    or phone_popup_version != EXPECTED_PHONE_POPUP_DETECTION_PATCH_VERSION\n"
+                 "                    or changed_non_green_ocr_version != EXPECTED_CHANGED_NON_GREEN_OCR_PATCH_VERSION):")
+main = replace_all_exact(main, old_condition, new_condition, 2, "require feature markers in both OCR compatibility gates")
+main = replace_one(
+    main,
+    "f'{core_version} / {speed_version} / {capture_version} / {detail_discount_version} / {recognition_only_version} / {single_card_batch_version} / {badge_color_vector_version} / {purchase_diagnostics_version} / {fast_badge_consensus_version}. '",
+    "f'{core_version} / {speed_version} / {capture_version} / {detail_discount_version} / {recognition_only_version} / {single_card_batch_version} / {badge_color_vector_version} / {purchase_diagnostics_version} / {fast_badge_consensus_version} / {phone_popup_version} / {changed_non_green_ocr_version}. '",
+    "include new feature markers in OCR-core error log"
+)
+main = replace_one(
+    main,
+    "{EXPECTED_OCR_CORE_VERSION} / {EXPECTED_OCR_SPEED_PATCH_VERSION} / {EXPECTED_DETAIL_CAPTURE_CACHE_PATCH_VERSION} / {EXPECTED_DETAIL_DISCOUNT_VALIDATION_PATCH_VERSION} / {EXPECTED_RECOGNITION_ONLY_PATCH_VERSION} / {EXPECTED_SINGLE_CARD_BATCH_PATCH_VERSION} / {EXPECTED_PURCHASE_DIAGNOSTICS_PATCH_VERSION} / {EXPECTED_FAST_BADGE_CONSENSUS_PATCH_VERSION}. Автодії не виконувались.",
+    "{EXPECTED_OCR_CORE_VERSION} / {EXPECTED_OCR_SPEED_PATCH_VERSION} / {EXPECTED_DETAIL_CAPTURE_CACHE_PATCH_VERSION} / {EXPECTED_DETAIL_DISCOUNT_VALIDATION_PATCH_VERSION} / {EXPECTED_RECOGNITION_ONLY_PATCH_VERSION} / {EXPECTED_SINGLE_CARD_BATCH_PATCH_VERSION} / {EXPECTED_PURCHASE_DIAGNOSTICS_PATCH_VERSION} / {EXPECTED_FAST_BADGE_CONSENSUS_PATCH_VERSION} / {EXPECTED_PHONE_POPUP_DETECTION_PATCH_VERSION} / {EXPECTED_CHANGED_NON_GREEN_OCR_PATCH_VERSION}. Автодії не виконувались.",
+    "include expected feature markers in second OCR-core error log"
+)
+
+method_pattern = re.compile(r"(?ms)^    def _auto_refresh_open_tablet\(self, sequence_id\):.*?(?=^    def _auto_refresh_begin_market_gate\(self, sequence_id\):)")
+old_methods = method_pattern.findall(main)
+if len(old_methods) == 1 and "_auto_refresh_guard_phone" not in main:
+    new_methods = r'''    def _auto_refresh_guard_phone(self, sequence_id, continuation, stage_label):
+        """Close a positively recognized phone overlay before any tablet/market click."""
+        if not self._auto_refresh_context_is_safe(sequence_id):
+            self._abort_auto_refresh_sequence('перед дією змінився фокус гри або розмір екрана')
+            return
+        try:
+            core = load_external_scan_core()
+            probe = core.probe_market_return_state(
+                dict(self.settings.get('grid') or {}), target_hwnd=self._auto_refresh_target_hwnd)
+        except Exception as exc:
+            probe = {'state': 'unknown', 'reason': f'{type(exc).__name__}: {exc}'}
+        state = str((probe or {}).get('state') or 'unknown')
+        if state == 'phone':
+            self._auto_refresh_phone_recovery_attempts = int(getattr(self, '_auto_refresh_phone_recovery_attempts', 0)) + 1
+            if self._auto_refresh_phone_recovery_attempts > 3:
+                self._abort_auto_refresh_sequence('вікно телефона залишилося видимим після трьох ESC; зупинився без кліків по невідомому екрану')
+                return
+            evidence = (probe or {}).get('phone_popup') or {}
+            self.logline(
+                f'AUTO-REFRESH: розпізнано вікно телефона перед етапом «{stage_label}» '
+                f'(score={evidence.get("score", 0.0)}); натискаю ESC і повторно перевіряю екран.'
+            )
+            self._auto_refresh_run_step(
+                sequence_id, 'ESC — закрити розпізнане вікно телефона',
+                lambda: self._auto_refresh_send_key(sequence_id, 0x1B), 420,
+                lambda seq: self._auto_refresh_guard_phone(seq, continuation, stage_label))
+            return
+        self._auto_refresh_phone_recovery_attempts = 0
+        continuation(sequence_id)
+
+    def _auto_refresh_open_tablet(self, sequence_id):
+        self._auto_refresh_guard_phone(sequence_id, self._auto_refresh_open_tablet_step, 'відкриття планшета')
+
+    def _auto_refresh_open_tablet_step(self, sequence_id):
+        self._auto_refresh_run_step(
+            sequence_id, 'стрілка вниз — відкрити планшет',
+            lambda: self._auto_refresh_send_key(sequence_id, 0x28), 600,
+            self._auto_refresh_unlock_tablet)
+
+    def _auto_refresh_unlock_tablet(self, sequence_id):
+        self._auto_refresh_guard_phone(sequence_id, self._auto_refresh_unlock_tablet_step, 'розблокування планшета')
+
+    def _auto_refresh_unlock_tablet_step(self, sequence_id):
+        self._auto_refresh_run_step(
+            sequence_id, 'клік по екрану блокування',
+            lambda: self._auto_refresh_click_fraction(sequence_id, 0.50, 0.50), 500,
+            self._auto_refresh_open_market)
+
+    def _auto_refresh_open_market(self, sequence_id):
+        self._auto_refresh_guard_phone(sequence_id, self._auto_refresh_open_market_step, 'відкриття Маркету')
+
+    def _auto_refresh_open_market_step(self, sequence_id):
+        # Coordinates are normalized to the active physical screen, so Full HD and 2K use the same path.
+        self._auto_refresh_run_step(
+            sequence_id, 'відкрити застосунок «Маркет»',
+            lambda: self._auto_refresh_click_fraction(sequence_id, 0.300, 0.255), 1100,
+            self._auto_refresh_select_transport)
+
+    def _auto_refresh_select_transport(self, sequence_id):
+        self._auto_refresh_guard_phone(sequence_id, self._auto_refresh_select_transport_step, 'вибір Транспорту')
+
+    def _auto_refresh_select_transport_step(self, sequence_id):
+        self._auto_refresh_run_step(
+            sequence_id, 'вибрати «Транспорт» у лівому меню',
+            lambda: self._auto_refresh_click_fraction(sequence_id, 0.040, 0.178), 1200,
+            self._auto_refresh_begin_market_gate)
+
+'''
+    match = method_pattern.search(main)
+    main = main[:match.start()] + new_methods + main[match.end():]
+    print("PATCHED guarded auto-refresh sequence")
+elif "_auto_refresh_guard_phone(self, sequence_id, continuation, stage_label)" in main:
+    print("ALREADY SET guarded auto-refresh sequence")
+else:
+    raise RuntimeError(f"Expected one auto-refresh sequence block, found {len(old_methods)}")
+
+phone_resume = r'''        if state == 'phone' and self._auto_refresh_in_progress:
+            self._auto_refresh_phone_recovery_attempts = int(getattr(self, '_auto_refresh_phone_recovery_attempts', 0)) + 1
+            if self._auto_refresh_phone_recovery_attempts > 3:
+                self._abort_auto_refresh_sequence('вікно телефона не закривається після трьох спроб; невідомий екран не чіпав')
+                return
+            self._resume_scan_after_action = False
+            self._resume_market_wait_started = 0.0
+            self.logline('AUTO-REFRESH: телефон з’явився під час перевірки повернення; закриваю через ESC і повторюю шлях планшет → Маркет → Транспорт.')
+            sequence_id = self._auto_refresh_sequence_id
+            self._auto_refresh_run_step(
+                sequence_id, 'ESC — закрити вікно телефона перед повторним входом',
+                lambda: self._auto_refresh_send_key(sequence_id, 0x1B), 420,
+                self._auto_refresh_open_tablet)
+            return
+
+'''
+anchor = "        if state == 'market':\n            # Require two newly presented frames and a small stable interval. Identical\n"
+if phone_resume.strip() not in main:
+    main = replace_one(main, anchor, phone_resume + anchor, "recover phone popup during market-resume gate")
+else:
+    print("ALREADY SET resume-gate phone recovery")
+write(p, main)
+
+version_path = root / "VERSION"
+if version_path.is_file():
+    write(version_path, "1.2.83\n")
+release_version = root / "docs" / "release" / "VERSION.txt"
+if release_version.is_file():
+    write(release_version, "NG Market Scanner v1.2.83 — PHONE RECOVERY + CHANGED-CARD OCR\n")
+
+for rel in ("build_single_exe_internal.bat", "BUILD_2K_PERSISTENT_DXCAM_v1.2.71.bat"):
+    bp = root / rel
+    if not bp.is_file():
+        raise RuntimeError(f"Expected Windows builder missing: {rel}")
+    data = bp.read_text(encoding="utf-8-sig", errors="replace")
+    for marker in ("1.2.83-phone-popup-rail-detector", "1.2.83-changed-non-green-field-ocr"):
+        if marker not in data:
+            data = data.rstrip() + f"\r\nrem Required source patch marker: {marker}\r\n"
+    write(bp, data)
+
+# Update the existing release-contract test for the new title.
+prior_title_test, prior_title_data = read("tests/test_v1259_parallel_detail_fastpath.py")
+prior_title_data = replace_one(
+    prior_title_data,
+    "setWindowTitle('NG Market Scanner v1.2.81 — POST-PURCHASE NAVIGATION",
+    "setWindowTitle('NG Market Scanner v1.2.83 — PHONE RECOVERY",
+    "update release-contract expected application title"
+)
+write(prior_title_test, prior_title_data)
+
+test_path = root / "tests" / "test_v1283_phone_popup_changed_ocr.py"
+if not test_path.exists():
+    test_path.parent.mkdir(parents=True, exist_ok=True)
+    write(test_path, r'''import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+class PhonePopupAndChangedCardOCRV1283Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.main = (ROOT / 'main.py').read_text(encoding='utf-8')
+        cls.core = (ROOT / 'scanner_core.py').read_text(encoding='utf-8')
+        cls.actions = (ROOT / 'scanner_actions.py').read_text(encoding='utf-8')
+        cls.builder = (ROOT / 'build_single_exe_internal.bat').read_text(encoding='utf-8')
+        cls.launcher = (ROOT / 'BUILD_2K_PERSISTENT_DXCAM_v1.2.71.bat').read_text(encoding='utf-8')
+
+    def test_new_core_markers_are_required_before_scanning(self):
+        self.assertIn('PHONE_POPUP_DETECTION_PATCH_VERSION = "1.2.83-phone-popup-rail-detector"', self.core)
+        self.assertIn('CHANGED_NON_GREEN_OCR_PATCH_VERSION = "1.2.83-changed-non-green-field-ocr"', self.core)
+        self.assertIn('EXPECTED_PHONE_POPUP_DETECTION_PATCH_VERSION = "1.2.83-phone-popup-rail-detector"', self.main)
+        self.assertIn('EXPECTED_CHANGED_NON_GREEN_OCR_PATCH_VERSION = "1.2.83-changed-non-green-field-ocr"', self.main)
+        self.assertIn('phone_popup_version != EXPECTED_PHONE_POPUP_DETECTION_PATCH_VERSION', self.main)
+        self.assertIn('changed_non_green_ocr_version != EXPECTED_CHANGED_NON_GREEN_OCR_PATCH_VERSION', self.main)
+
+    def test_phone_overlay_has_priority_over_modal_state(self):
+        phone_check = self.core.index('phone_evidence = _detect_phone_popup_in_frame')
+        confirm_check = self.core.index('confirm_center = _locate_green_confirm_button_center_in_frame', phone_check)
+        self.assertLess(phone_check, confirm_check)
+        self.assertIn("result.update({'state': 'phone'", self.core)
+
+    def test_escape_is_only_sent_after_phone_recognition(self):
+        guard_start = self.main.index('def _auto_refresh_guard_phone')
+        guard_end = self.main.index('def _auto_refresh_open_tablet(', guard_start)
+        guard = self.main[guard_start:guard_end]
+        self.assertIn("if state == 'phone':", guard)
+        self.assertIn('self._auto_refresh_send_key(sequence_id, 0x1B)', guard)
+        self.assertIn('self._auto_refresh_phone_recovery_attempts > 3', guard)
+
+    def test_non_green_ocr_is_gated_out_of_auto_buy_fast_lane(self):
+        self.assertIn('cache_valid and not self.fast_candidate_mode', self.core)
+        self.assertIn("fast_candidate_mode=bool(self.settings.get('auto_click', False))", self.main)
+        self.assertIn('DETAIL_BUY = (1484, 1005)', self.actions)
+        self.assertIn('FINAL_CONFIRM = (850, 716)', self.actions)
+        self.assertIn('BACK_MARKET = (258, 34)', self.actions)
+
+    def test_windows_builders_require_new_feature_markers(self):
+        for token in ('1.2.83-phone-popup-rail-detector', '1.2.83-changed-non-green-field-ocr'):
+            self.assertIn(token, self.builder)
+            self.assertIn(token, self.launcher)
+
+if __name__ == '__main__':
+    unittest.main()
+''')
+    print("ADDED tests/test_v1283_phone_popup_changed_ocr.py")
+else:
+    print("ALREADY SET test_v1283_phone_popup_changed_ocr.py")
+
+print("PATCH V1.2.83 PHONE RECOVERY + CHANGED-CARD OCR COMPLETE")
+
+# === END v1.2.83 PHONE + CHANGED-CARD OCR PATCH ===
