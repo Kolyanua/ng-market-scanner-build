@@ -1883,14 +1883,18 @@ class PostPurchaseFourSecondTabletRefreshTests(unittest.TestCase):
             "POST_PURCHASE_UNKNOWN_BACK_MIN_WAIT_SECONDS = 4.00",
             "POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS = 4.00",
             "POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00",
-            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS = 4.00",
         ):
             self.assertIn(marker, self.main, marker)
-        # The supplied older source variant implements this guard inline rather than via a named constant.
+        # The supplied older source variant implements these modal/unknown guards inline.
         self.assertTrue(
             "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_MIN_SECONDS = 4.00" in self.main
             or "and unknown_for >= 4.00" in self.main
             or "unknown_for >= 4.00" in self.main
+        )
+        self.assertTrue(
+            "POST_PURCHASE_UNKNOWN_AFTER_CONFIRM_BACK_GRACE_SECONDS = 4.00" in self.main
+            or "and confirm_seen_for >= POST_PURCHASE_CONFIRM_GRACE_SECONDS" in self.main
+            or "confirm_seen_for >= 4.00" in self.main
         )
         self.assertIn("cancel_cooldown_done = not last_attempt or (now - last_attempt) >= POST_PURCHASE_CANCEL_TO_BACK_GRACE_SECONDS", self.main)
 
