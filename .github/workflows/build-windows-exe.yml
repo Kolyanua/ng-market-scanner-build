@@ -88,6 +88,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $log = Join-Path $env:RUNNER_TEMP 'ngms-build.log'
+          # Preserve this user's packaged auto-click/auto-confirm defaults; the requested patch changes only name confidence and coordinates.
+          $env:NGMS_PRESERVE_AUTOBUY = '1'
           Push-Location $env:NGMS_SOURCE_ROOT
           try {
             cmd.exe /d /c 'call build_single_exe_internal.bat' *> $log
