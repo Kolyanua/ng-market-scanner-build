@@ -981,3 +981,133 @@ if __name__ == "__main__":
 
 
 patch_capture_compatibility()
+
+# v1.2.81 targeted patch: current UI coordinate calibration and 0.80 name-match floor.
+def patch_name_confidence_and_current_2k_coordinates():
+    def replace_one(data, before, after, label):
+        count = data.count(before)
+        if count == 0:
+            if after in data:
+                print(f"ALREADY SET {label}")
+                return data
+            raise RuntimeError(f"Could not locate expected source for {label}")
+        if count != 1:
+            raise RuntimeError(f"Refusing ambiguous patch for {label}: {count} matches")
+        print(f"PATCHED {label}")
+        return data.replace(before, after, 1)
+
+    action_path = root / "scanner_actions.py"
+    if not action_path.is_file():
+        raise RuntimeError("scanner_actions.py missing for 2K coordinate patch")
+    action_data = action_path.read_text(encoding="utf-8")
+    action_data = replace_one(
+        action_data, "FINAL_CONFIRM = (1070, 717)", "FINAL_CONFIRM = (850, 716)",
+        "FINAL_CONFIRM reference point to current screenshot calibration"
+    )
+    action_data = replace_one(
+        action_data, "BACK_MARKET = (320, 42)", "BACK_MARKET = (258, 34)",
+        "BACK_MARKET reference point to current screenshot calibration"
+    )
+    if "DETAIL_BUY = (1484, 1005)" not in action_data:
+        raise RuntimeError("DETAIL_BUY reference point differs from the supplied screenshot baseline; refusing unrelated change")
+    action_path.write_text(action_data, encoding="utf-8", newline="\n")
+
+    main_path = root / "main.py"
+    if not main_path.is_file():
+        raise RuntimeError("main.py missing for confidence-floor migration")
+    main_data = main_path.read_text(encoding="utf-8")
+    main_data = replace_one(
+        main_data, "'confidence_protection_enabled': True,",
+        "'confidence_protection_enabled': False,",
+        "default strict name-confidence protection to OFF (0.80)"
+    )
+    main_data = main_data.replace(
+        "get('confidence_protection_enabled', True)",
+        "get('confidence_protection_enabled', False)"
+    )
+    migration = (
+        "    # v1.2.81: migrate an existing saved configuration to the requested 0.80 floor once.\n"
+        "    # The user can still re-enable the stricter 0.93 checkbox explicitly later.\n"
+        "    if not bool(settings.get('name_confidence_floor_080_migrated', False)):\n"
+        "        settings['confidence_protection_enabled'] = False\n"
+        "        settings['name_confidence_floor_080_migrated'] = True\n"
+    )
+    anchor = "    profile = str(settings.get('resolution_profile', 'auto') or 'auto')"
+    if migration.strip() not in main_data:
+        if main_data.count(anchor) != 1:
+            raise RuntimeError("Cannot safely insert one-time 0.80 confidence migration")
+        main_data = main_data.replace(anchor, migration + anchor, 1)
+    main_path.write_text(main_data, encoding="utf-8", newline="\n")
+
+    settings_path = root / "settings.json"
+    if not settings_path.is_file():
+        raise RuntimeError("settings.json missing for 0.80 confidence default")
+    import json
+    packaged_settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
+    packaged_settings["confidence_protection_enabled"] = False
+    packaged_settings["name_confidence_floor_080_migrated"] = True
+    settings_path.write_text(
+        json.dumps(packaged_settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8"
+    )
+
+    # Update only assertions that encode the old fixed coordinates.
+    test_updates = {
+        "tests/test_scanner_actions.py": {
+            "(1427, 956)": "(1133, 955)",
+            "(1070, 717)": "(850, 716)",
+            "(713, 478)": "(567, 477)",
+        },
+        "tests/test_dashboard_contract.py": {
+            "FINAL_CONFIRM = (1070, 717)": "FINAL_CONFIRM = (850, 716)",
+        },
+    }
+    for rel, replacements in test_updates.items():
+        test_path = root / rel
+        if not test_path.is_file():
+            raise RuntimeError(f"Expected regression test missing: {rel}")
+        content = test_path.read_text(encoding="utf-8")
+        for before, after in replacements.items():
+            if before in content:
+                content = content.replace(before, after)
+                print(f"UPDATED TEST EXPECTATION {rel}: {before} -> {after}")
+            elif after in content:
+                continue
+            else:
+                raise RuntimeError(f"Could not find old/new expected value in {rel}: {before}")
+        test_path.write_text(content, encoding="utf-8", newline="\n")
+
+    regression_test = root / "tests" / "test_v1283_name_confidence_and_2k_ui_calibration.py"
+    regression_test.write_text(r'''import json
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+class NameConfidenceAndCurrent2KCalibrationTests(unittest.TestCase):
+    def test_existing_user_config_migrates_to_080_once(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
+        self.assertIn("'confidence_protection_enabled': False", main)
+        self.assertIn("name_confidence_floor_080_migrated", main)
+        self.assertIn("settings['confidence_protection_enabled'] = False", main)
+        self.assertIn("get('confidence_protection_enabled', False)", main)
+        self.assertFalse(settings["confidence_protection_enabled"])
+        self.assertTrue(settings["name_confidence_floor_080_migrated"])
+
+    def test_current_screenshot_coordinates_scale_to_2k(self):
+        actions = (ROOT / "scanner_actions.py").read_text(encoding="utf-8")
+        tests = (ROOT / "tests" / "test_scanner_actions.py").read_text(encoding="utf-8")
+        self.assertIn("DETAIL_BUY = (1484, 1005)", actions)
+        self.assertIn("FINAL_CONFIRM = (850, 716)", actions)
+        self.assertIn("BACK_MARKET = (258, 34)", actions)
+        self.assertIn("(1133, 955)", tests)
+        self.assertIn("(1979, 1340)", tests)
+
+if __name__ == "__main__":
+    unittest.main()
+''', encoding="utf-8", newline="\n")
+    print("ADDED regression coverage for 0.80 migration and screenshot-derived 2K coordinates")
+
+patch_name_confidence_and_current_2k_coordinates()
+
