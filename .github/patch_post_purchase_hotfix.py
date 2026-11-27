@@ -2019,7 +2019,7 @@ class NativeFullHDCoodinateAuditTests(unittest.TestCase):
             "final_confirm": FINAL_CONFIRM,
             "back_market": BACK_MARKET,
         }
-        cls.scale = scale_reference_point
+        cls.scale = staticmethod(scale_reference_point)
         cls.main = (ROOT / "main.py").read_text(encoding="utf-8")
 
     def test_screenshot_calibrated_reference_points_are_fhd(self):
@@ -2068,7 +2068,7 @@ main_data = _v1285_replace_once(
 main_data = _v1285_replace_once(
     main_data,
     "self.logline('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE + TABLET REFRESH. Після третього кліку пауза 4 с; «Скасувати» лише якщо модальне вікно присутнє; ще 4 с до «Назад»; після повернення каталогу ще 4 с від останньої дії, примусове оновлення через планшет → Маркет → Транспорт і лише потім відновлення сканування. OCR і швидкий ланцюжок CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінені. Телефон закривається через ESC лише після розпізнавання. Full HD/2K; зупинка Ctrl+Alt+F8.')",
-    "self.logline('NG Market Scanner v1.2.85 — COORDINATE AUDIT ЗА НАТИВНИМИ СКРИНШОТАМИ 1919×1079 І БАЗОЮ 1920×1080. Перевірені кліки: DETAIL_BUY=(1484,1005), FINAL_CONFIRM=(850,716), BACK_MARKET=(320,42); на 2K: (1979,1340), (1133,955), (427,56). CARD_CLICK залишається динамічним за карткою. Збережено паузи 4 с, оновлення через планшет → Маркет → Транспорт, OCR змінених полів і відновлення після телефона. Швидкий ланцюжок покупки не змінено. Зупинка Ctrl+Alt+F8.')",
+    "self.logline('NG Market Scanner v1.2.85 — COORDINATE AUDIT ЗА НАТИВНИМИ СКРИНШОТАМИ 1919×1079 І БАЗОЮ 1920×1080. Перевірені кліки: DETAIL_BUY=(1484,1005), FINAL_CONFIRM=(850,716), BACK_MARKET=(320,42); на 2K: (1979,1340), (1133,955), (427,56). CARD_CLICK залишається динамічним за карткою. Збережено паузи 4 с, оновлення через планшет → Маркет → Транспорт, OCR змінених полів і відновлення після телефона. Швидкий ланцюжок покупки CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінено. Зупинка Ctrl+Alt+F8.')",
     "update startup log for v1.2.85 coordinate audit"
 )
 write(p, main_data)
