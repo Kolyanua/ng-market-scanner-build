@@ -1928,4 +1928,201 @@ else:
 print("PATCH V1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH COMPLETE")
 # === END v1.2.84 FOUR-SECOND POST-PURCHASE + TABLET REFRESH ===
 
+
+# === BEGIN v1.2.85 NATIVE FHD + 2K COORDINATE AUDIT ===
+# Re-check the latest working v1.2.84 coordinates against the actual uploaded PNGs
+# (1919x1079, effectively the user's 1920x1080 reference), not the chat preview size.
+def _v1285_read(rel):
+    path = root / rel
+    if not path.is_file():
+        raise RuntimeError(f"v1.2.85 coordinate audit: required file missing: {rel}")
+    return path, path.read_text(encoding="utf-8")
+
+
+def _v1285_replace_once(data, old, new, label):
+    n = data.count(old)
+    if n == 0 and new in data:
+        print(f"ALREADY SET v1.2.85 {label}")
+        return data
+    if n != 1:
+        raise RuntimeError(f"v1.2.85 refused ambiguous coordinate patch for {label}: {n} matches")
+    print(f"PATCHED v1.2.85 {label}")
+    return data.replace(old, new, 1)
+
+
+# Confirm the three active click points are the screenshot-calibrated 1920x1080
+# reference points. Do not re-scale the chat preview's rendered pixel dimensions.
+p, action_data = _v1285_read("scanner_actions.py")
+for point in (
+    "DETAIL_BUY = (1484, 1005)",
+    "FINAL_CONFIRM = (850, 716)",
+    "BACK_MARKET = (320, 42)",
+):
+    if action_data.count(point) != 1:
+        raise RuntimeError(
+            "v1.2.85 screenshot coordinate mismatch; refusing to silently move a working click: "
+            + point
+        )
+print("VERIFIED FHD reference clicks: DETAIL_BUY=(1484,1005), FINAL_CONFIRM=(850,716), BACK_MARKET=(320,42)")
+
+# Correct the old audit assertion which treated the chat's scaled preview (1651x927)
+# as though it were the screenshot's physical desktop size. The supplied PNGs are
+# 1919x1079 and the click reference is 1920x1080.
+p, coordinate_test = _v1285_read("tests/test_v1283_name_confidence_and_2k_ui_calibration.py")
+coordinate_test = _v1285_replace_once(
+    coordinate_test,
+    "        # The uploaded screenshot is a resized view of the 16:9 game surface.\n"
+    "        self.assertEqual(scale_reference_point(BACK_MARKET, (1651, 927)), (275, 36))",
+    "        # The actual uploaded PNGs are 1919x1079; this is effectively the 1920x1080 desktop.\n"
+    "        self.assertEqual(scale_reference_point(BACK_MARKET, (1920, 1080)), (320, 42))\n"
+    "        self.assertEqual(scale_reference_point(BACK_MARKET, (1919, 1079)), (320, 42))",
+    "use native Full HD screenshot dimensions in back-button regression test"
+)
+write(p, coordinate_test)
+
+# The existing v1.2.84 release tests remain in force but expect the new audit-build title.
+p, title_test = _v1285_read("tests/test_v1259_parallel_detail_fastpath.py")
+title_test = _v1285_replace_once(
+    title_test,
+    "setWindowTitle('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE",
+    "setWindowTitle('NG Market Scanner v1.2.85 — NATIVE FHD + 2K COORDINATE AUDIT",
+    "update release-contract expected title to v1.2.85"
+)
+write(p, title_test)
+
+p, post_purchase_test = _v1285_read("tests/test_v1284_post_purchase_4s_tablet_refresh.py")
+post_purchase_test = _v1285_replace_once(
+    post_purchase_test,
+    "NG Market Scanner v1.2.84",
+    "NG Market Scanner v1.2.85",
+    "keep four-second tablet-refresh regression tied to v1.2.85"
+)
+write(p, post_purchase_test)
+
+# Add explicit verification of all three fixed click points at FHD and 2K, plus
+# verify the Cancel button's screenshot reference point without changing the buy flow.
+test_path = root / "tests" / "test_v1285_native_fhd_2k_coordinate_audit.py"
+test_path.write_text(r'''import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+class NativeFullHDCoodinateAuditTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from scanner_actions import DETAIL_BUY, FINAL_CONFIRM, BACK_MARKET, scale_reference_point
+        cls.points = {
+            "detail_buy": DETAIL_BUY,
+            "final_confirm": FINAL_CONFIRM,
+            "back_market": BACK_MARKET,
+        }
+        cls.scale = scale_reference_point
+        cls.main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    def test_screenshot_calibrated_reference_points_are_fhd(self):
+        self.assertEqual(self.points["detail_buy"], (1484, 1005))
+        self.assertEqual(self.points["final_confirm"], (850, 716))
+        self.assertEqual(self.points["back_market"], (320, 42))
+        for point in self.points.values():
+            self.assertEqual(self.scale(point, (1920, 1080)), point)
+
+    def test_all_fixed_click_points_scale_to_expected_2k_positions(self):
+        self.assertEqual(self.scale(self.points["detail_buy"], (2560, 1440)), (1979, 1340))
+        self.assertEqual(self.scale(self.points["final_confirm"], (2560, 1440)), (1133, 955))
+        self.assertEqual(self.scale(self.points["back_market"], (2560, 1440)), (427, 56))
+
+    def test_native_upload_dimensions_do_not_use_chat_preview_scale(self):
+        self.assertEqual(self.scale(self.points["back_market"], (1919, 1079)), (320, 42))
+
+    def test_purchase_modal_cancel_reference_is_documented_not_a_buy_action(self):
+        # In the supplied confirmation-modal screenshot, Cancel is centered near this point.
+        # It is a reference-only point: the normal purchase path must still click Confirm.
+        cancel_reference = (1105, 716)
+        self.assertEqual(self.scale(cancel_reference, (1920, 1080)), (1105, 716))
+        self.assertEqual(self.scale(cancel_reference, (2560, 1440)), (1473, 955))
+        self.assertIn("FINAL_CONFIRM", (ROOT / "scanner_actions.py").read_text(encoding="utf-8"))
+
+    def test_tablet_refresh_clicks_remain_screen_relative(self):
+        self.assertIn("_auto_refresh_click_fraction(sequence_id, 0.50, 0.50)", self.main)
+        self.assertIn("_auto_refresh_click_fraction(sequence_id, 0.300, 0.255)", self.main)
+        self.assertIn("_auto_refresh_click_fraction(sequence_id, 0.040, 0.178)", self.main)
+        self.assertIn("POST_PURCHASE_INTER_ACTION_PAUSE_SECONDS = 4.00", self.main)
+
+if __name__ == "__main__":
+    unittest.main()
+''', encoding="utf-8", newline="\n")
+print("ADDED tests/test_v1285_native_fhd_2k_coordinate_audit.py")
+
+# Change only release metadata and the startup log. Coordinates, purchase actions, OCR,
+# phone recovery, four-second waits, and tablet refresh behavior are intentionally unchanged.
+p, main_data = _v1285_read("main.py")
+main_data = _v1285_replace_once(
+    main_data,
+    "self.setWindowTitle('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE PAUSES + TABLET REFRESH / Full HD / 2K')",
+    "self.setWindowTitle('NG Market Scanner v1.2.85 — NATIVE FHD + 2K COORDINATE AUDIT / Full HD / 2K')",
+    "set v1.2.85 application title"
+)
+main_data = _v1285_replace_once(
+    main_data,
+    "self.logline('NG Market Scanner v1.2.84 — FOUR-SECOND POST-PURCHASE + TABLET REFRESH. Після третього кліку пауза 4 с; «Скасувати» лише якщо модальне вікно присутнє; ще 4 с до «Назад»; після повернення каталогу ще 4 с від останньої дії, примусове оновлення через планшет → Маркет → Транспорт і лише потім відновлення сканування. OCR і швидкий ланцюжок CARD_CLICK → DETAIL_BUY → FINAL_CONFIRM не змінені. Телефон закривається через ESC лише після розпізнавання. Full HD/2K; зупинка Ctrl+Alt+F8.')",
+    "self.logline('NG Market Scanner v1.2.85 — COORDINATE AUDIT ЗА НАТИВНИМИ СКРИНШОТАМИ 1919×1079 І БАЗОЮ 1920×1080. Перевірені кліки: DETAIL_BUY=(1484,1005), FINAL_CONFIRM=(850,716), BACK_MARKET=(320,42); на 2K: (1979,1340), (1133,955), (427,56). CARD_CLICK залишається динамічним за карткою. Збережено паузи 4 с, оновлення через планшет → Маркет → Транспорт, OCR змінених полів і відновлення після телефона. Швидкий ланцюжок покупки не змінено. Зупинка Ctrl+Alt+F8.')",
+    "update startup log for v1.2.85 coordinate audit"
+)
+write(p, main_data)
+
+version_path = root / "VERSION"
+if version_path.is_file():
+    version_path.write_text("1.2.85\n", encoding="utf-8", newline="\n")
+release_version = root / "docs" / "release" / "VERSION.txt"
+if release_version.is_file():
+    release_version.write_text(
+        "NG Market Scanner v1.2.85 — NATIVE FHD + 2K COORDINATE AUDIT\n",
+        encoding="utf-8",
+        newline="\n"
+    )
+release_note = root / "docs" / "release" / "COORDINATE_AUDIT_v1.2.85_UA.txt"
+release_note.parent.mkdir(parents=True, exist_ok=True)
+release_note.write_text(
+    "NG Market Scanner v1.2.85 — перевірка координат за скриншотами користувача\n\n"
+    "Вихідні скриншоти: 1919x1079 пікселів, практично Full HD 1920x1080. "
+    "Не використовувати розмір попереднього перегляду зображення в чаті як роздільність екрана.\n\n"
+    "Базові координати 1920x1080:\n"
+    "DETAIL_BUY=(1484,1005) — кнопка «Купити» на сторінці авто.\n"
+    "FINAL_CONFIRM=(850,716) — зелена кнопка підтвердження покупки.\n"
+    "BACK_MARKET=(320,42) — стрілка повернення до каталогу.\n"
+    "Кнопка «Скасувати» в показаному модальному вікні має орієнтовний центр (1105,716); "
+    "це лише довідкова точка, не ціль нормального ланцюжка покупки.\n\n"
+    "Очікувані позиції 2560x1440 після масштабування:\n"
+    "DETAIL_BUY=(1979,1340); FINAL_CONFIRM=(1133,955); BACK_MARKET=(427,56); "
+    "довідкова позиція Cancel=(1473,955).\n\n"
+    "CARD_CLICK залишається динамічним за геометрією картки. Кліки оновлення через планшет "
+    "залишаються відносними до активного екрана. Чотирисекундні паузи, OCR, phone recovery "
+    "і порядок оновлення через планшет збережено без змін.\n",
+    encoding="utf-8",
+    newline="\n"
+)
+
+# Update official builder release guard and failure text.
+p, build_data = _v1285_read("build_single_exe_internal.bat")
+build_data = _v1285_replace_once(
+    build_data,
+    'findstr /C:"NG Market Scanner v1.2.84" main.py >nul',
+    'findstr /C:"NG Market Scanner v1.2.85" main.py >nul',
+    "accept v1.2.85 source title in official EXE builder"
+)
+build_data = _v1285_replace_once(
+    build_data,
+    "echo [ERROR] Main source is not the v1.2.84 four-second post-purchase and tablet-refresh release.",
+    "echo [ERROR] Main source is not the v1.2.85 native Full HD and 2K coordinate-audit release.",
+    "update official builder release-guard diagnostic"
+)
+write(p, build_data)
+
+print("PATCH V1.2.85 NATIVE FHD + 2K COORDINATE AUDIT COMPLETE")
+# === END v1.2.85 NATIVE FHD + 2K COORDINATE AUDIT ===
+
+
 # === END v1.2.83 PHONE + CHANGED-CARD OCR PATCH ===
